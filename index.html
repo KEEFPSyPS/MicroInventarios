@@ -559,10 +559,12 @@ let avisoLimite = false;
 function normalizar(a){
   const txt = (v,n)=>String(v==null?"":v).slice(0,n);
   const cantidad = v=>{
-    /* Las reglas exigen texto de máximo 12 caracteres en las cantidades.
-       Se acepta "1,50" y "1.50"; si no es un número utilizable se deja vacío.
-       El resultado NUNCA debe exceder 12 caracteres: String(Number(...)) puede
-       volver a pasarse (p. ej. 12345678901234567890 -> 1.2345678901234567e+19). */
+    /* Las reglas exigen TEXTO de máximo 12 caracteres en las cantidades
+       (firestore.rules: `p.fact is string && p.fact.size() <= 12`).
+       Si llegara un número (p. ej. de un input type="number" o de una extracción
+       de factura), el documento entero se rechazaría con permission-denied.
+       Por eso se convierte a texto SIEMPRE, sea cual sea el tipo de entrada. */
+    if(typeof v === "number") return cantidadTexto(v);
     const s = String(v==null?"":v).trim();
     if(!s) return "";
     if(s.length <= 12) return s;
@@ -899,7 +901,10 @@ document.addEventListener("click",async e=>{
    File API del navegador, se extraen número de parte y cantidad, y el objeto
    File se descarta. A Firestore solo viajan las partidas confirmadas. */
 
-/* Normaliza una cantidad: admite "1", "1.000", "1,50", "1,234.56". */
+/* Normaliza una cantidad y la devuelve como TEXTO.
+   Devuelve string porque las reglas de Firestore exigen que fact/recib/real/sicar
+   sean siempre texto (firestore.rules: `p.fact is string`). Si aquí saliera un
+   número, el documento entero sería rechazado con permission-denied. */
 function aNumero(v){
   if(v==null) return null;
   let t=String(v).trim().replace(/[^\d.,-]/g,"");
@@ -910,15 +915,28 @@ function aNumero(v){
     if(uc>up) t=t.replace(/\./g,"").replace(",",".");
     else t=t.replace(/,/g,"");
   }else if(uc>-1){
+    /* Con coma: "1,50" es decimal en es-MX y "1,000" es mil. Se decide por el
+       número de decimales: tres dígitos exactos = separador de miles. */
     t = (t.length-uc-1===3 && /^\d{1,3}(,\d{3})+$/.test(t)) ? t.replace(/,/g,"") : t.replace(",",".");
   }else if(up>-1){
-    /* Solo hay puntos: "1.000" son miles, pero "1.5" es decimal.
-       Se distingue porque el grupo de miles son exactamente 3 dígitos. */
-    t = /^\d{1,3}(\.\d{3})+$/.test(t) ? t.replace(/\./g,"") : t;
+    /* Solo puntos. En una factura mexicana el punto es el DECIMAL: el CFDI
+       escribe Cantidad="1.000" para una pieza y Cantidad="2.5" para dos y
+       medio. Interpretarlo como miles multiplicaba por mil la cantidad
+       (el renglón de 1 pieza se cargaba como 1000), así que se respeta el
+       valor tal como viene. */
+    t = t;
   }
   const n=Number(t);
   return isFinite(n) ? n : null;
 }
+
+/* Convierte a texto seguro (12 caracteres máximo) lo que devuelve aNumero(). */
+const cantidadTexto = v=>{
+  const n = typeof v === "number" ? v : aNumero(v);
+  if(n == null || !isFinite(n) || n <= 0) return "";
+  const s = String(n);
+  return s.length <= 12 ? s : String(Math.trunc(n)).slice(0, 12);
+};
 const limpia = s=>String(s??"").replace(/\s+/g," ").trim();
 
 /* --- XML CFDI 3.3 / 4.0 --- */
@@ -936,7 +954,8 @@ function extraerXML(texto){
     return {
       codigo: limpia(g("NoIdentificacion") || g("Codigo") || g("SKU") || g("CodigoArticulo")),
       desc:   limpia(g("Descripcion") || n.textContent),
-      fact:   aNumero(g("Cantidad"))
+      /* Se entrega TEXTO: las reglas exigen `p.fact is string`. */
+      fact:   cantidadTexto(g("Cantidad"))
     };
   }).filter(p=>p.codigo || p.desc);
   return {partidas:crudo, cabecera:leerCabeceraCFDI(doc), fuente:"XML CFDI"};
@@ -989,8 +1008,8 @@ function partidasDesdeLineas(lineas){
     /* Patrón: código ... cantidad (la cantidad suele cerrar el renglón). */
     const m = l.match(/^([A-Za-z0-9][A-Za-z0-9._\-\/]{2,29})\s+(.{3,80}?)\s+(\d{1,6}(?:[.,]\d{1,3})?)\s*(?:pz|pza|pieza|piezas|kg|m|caja|paq|und)?\.?$/i);
     if(!m) return;
-    const cant = aNumero(m[3]);
-    if(cant===null || cant<=0) return;
+    const cant = cantidadTexto(m[3]);
+    if(cant === "" ) return;
     const codigo = limpia(m[1]), desc = limpia(m[2]);
     /* Descarta renglones que en realidad son totales o claves fiscales. */
     if(!codigo || /^\d{6,}$/.test(codigo)) return;
@@ -1055,7 +1074,10 @@ function aplicarExtraccion(){
     })
     .map(({x,i})=>{
       const val=(k,def)=>{const el=document.querySelector(`[data-x="${k}"][data-j="${i}"]`);return el?el.value:def;};
-      return {codigo:limpia(val("codigo",x.codigo)), desc:limpia(val("desc",x.desc)), fact:String(aNumero(val("fact",x.fact))||"")};
+      /* cantidadTexto() garantiza TEXTO y el máximo de 12 caracteres que
+         exigen las reglas de Firestore. Antes se usaba String(aNumero(...)||""),
+         que convertía "0" en "" y dejaba pasar notaciones largas. */
+      return {codigo:limpia(val("codigo",x.codigo)), desc:limpia(val("desc",x.desc)), fact:cantidadTexto(val("fact",x.fact))};
     })
     .filter(x=>x.codigo && aNumero(x.fact)>0)
     .map(x=>({codigo:x.codigo, desc:x.desc, fact:x.fact, recib:"", real:"", sicar:""}));
