@@ -462,12 +462,28 @@ const puede = (a,n)=>PASOS.slice(0,n-1).every(p=>p.ok(a));
 
 let A = blank(), vista = "nueva", msg = "";
 
+/* ¿El documento cumple ya el esquema que exigen las reglas de Firestore?
+   Las reglas rechazan cualquier partida con codigo vacío, así que una auditoría
+   recién abierta (con la fila en blanco) todavía NO se puede guardar.
+   Se replica aquí ese mínimo para avisar antes de intentar la escritura. */
+function guardable(a){
+  if(!a.fecha || !a.linea || !String(a.proveedor||"").trim()) return false;
+  if(!a.partidas.length) return false;
+  /* Toda partida debe tener código y descripción con texto, y cantidad > 0. */
+  return a.partidas.every(p=>String(p.codigo||"").trim() && String(p.desc||"").trim() && num(p.fact) > 0);
+}
+
 async function guardar(){
   A.paso = Math.max(A.paso, 1);
   /* Trazabilidad: quién capturó y cuándo, para que un reporte no se pueda atribuir a otro. */
   if(usuario){ A.uid = usuario.uid; A.email = usuario.email || ""; }
   A.actualizado = Date.now();
+  /* Se omite la escritura mientras el documento no cumpla el esquema: si se
+     enviara, las reglas lo rechazarían con permission-denied y el usuario vería
+     un error que en realidad solo significa "aún no termino de capturar". */
+  if(!guardable(A)) return false;
   await store.save(JSON.parse(JSON.stringify(A)));
+  return true;
 }
 
 /* ===== Render ===== */
@@ -650,8 +666,34 @@ document.addEventListener("click",async e=>{
     if(b.dataset.go){const k=+b.dataset.go;if(k>=1&&puede(A,k)){A.paso=k;return render();}}
     if(b.id==="add"){if(A.partidas.length<20)A.partidas.push(linea0());return render();}
     if(b.dataset.del){A.partidas.splice(+b.dataset.del,1);return render();}
-    if(b.id==="sig"){A.paso=Math.min(6,A.paso+1);await guardar();return render();}
+    if(b.id==="sig"){
+      A.paso=Math.min(6,A.paso+1);
+      /* Al avanzar de paso se intenta persistir el avance; si el documento aún no
+         cumple el esquema (p. ej. paso 1 sin partidas capturadas) no es un error,
+         solo significa que todavía no hay nada que guardar. */
+      const guardado = await guardar();
+      msg = guardado ? "" : "Avance de paso sin guardar todavía: completa fecha, línea, proveedor y las partidas de la factura.";
+      return render();
+    }
     if(b.id==="nuevo"){A=blank();return render();}
+    if(b.id==="pdf"){
+      /* Antes de generar el reporte se persiste; si el documento no cumple el
+         esquema se avisa y no se produce un PDF incompleto que parezca válido. */
+      const guardado = await guardar();
+      if(!guardado){ msg = "Para generar el reporte, completa fecha, línea, proveedor y al menos una partida con código, descripción y cantidad facturada."; return render(); }
+      return crearPDF([A],`Folio ${A.folio} · ${A.proveedor}`);
+    }
+    if(b.dataset.open){A=JSON.parse(JSON.stringify(window._list.find(x=>x.id===b.dataset.open)));vista="nueva";return render();}
+    if(b.dataset.pdf){const a=window._list.find(x=>x.id===b.dataset.pdf);return crearPDF([a],`Folio ${a.folio} · ${a.proveedor}`);}
+    if(b.dataset.rm){if(confirm("¿Eliminar esta auditoría? No se puede deshacer.")){await store.remove(b.dataset.rm);}return renderHist();}
+    if(b.id==="pdfDia"){
+      const d=$("#dia").value, l=window._list.filter(a=>a.fecha===d&&completa(a));
+      if(!l.length){msg="No hay auditorías completas en esa fecha.";return renderHist();}
+      return crearPDF(l,`Reporte del día ${d}`);
+    }
+  }catch(err){ msg="No se pudo completar la acción: "+err.message; vista==="hist"?renderHist():render(); }
+});
+
 /* ===== Extracción de partidas desde la factura (XML CFDI o PDF) =====
    IMPORTANTE: el archivo nunca se sube ni se guarda. Se lee en memoria con la
    File API del navegador, se extraen número de parte y cantidad, y el objeto
@@ -827,20 +869,6 @@ function aplicarExtraccion(){
   if(!A.partidas.length) A.partidas = [linea0()];
   return van.length;
 }
-
-
-
-    if(b.id==="pdf"){await guardar();return crearPDF([A],`Folio ${A.folio} · ${A.proveedor}`);}
-    if(b.dataset.open){A=JSON.parse(JSON.stringify(window._list.find(x=>x.id===b.dataset.open)));vista="nueva";return render();}
-    if(b.dataset.pdf){const a=window._list.find(x=>x.id===b.dataset.pdf);return crearPDF([a],`Folio ${a.folio} · ${a.proveedor}`);}
-    if(b.dataset.rm){if(confirm("¿Eliminar esta auditoría? No se puede deshacer.")){await store.remove(b.dataset.rm);}return renderHist();}
-    if(b.id==="pdfDia"){
-      const d=$("#dia").value, l=window._list.filter(a=>a.fecha===d&&completa(a));
-      if(!l.length){msg="No hay auditorías completas en esa fecha.";return renderHist();}
-      return crearPDF(l,`Reporte del día ${d}`);
-    }
-  }catch(err){ msg="No se pudo completar la acción: "+err.message; vista==="hist"?renderHist():render(); }
-});
 
 /* ===== PDF ===== */
 function crearPDF(list,titulo){
