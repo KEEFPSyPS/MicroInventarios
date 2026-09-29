@@ -462,6 +462,48 @@ const puede = (a,n)=>PASOS.slice(0,n-1).every(p=>p.ok(a));
 
 let A = blank(), vista = "nueva", msg = "";
 
+/* Ajusta el documento al esquema que exigen las reglas de Firestore.
+   Motivo: la app escribe con setDoc(), que REEMPLAZA el documento entero. Si al
+   objeto le falta un campo (p. ej. una auditoría abierta desde el historial que
+   se guardó con una versión anterior de la app, o un documento que no pasó por
+   blank()), las reglas lo rechazan con permission-denied. Igual ocurre si un
+   input type="number" entrega un valor fuera de lo previsto. Se normaliza aquí,
+   en un solo punto, para que guardar() siempre envíe algo válido. */
+function normalizar(a){
+  const txt = (v,n)=>String(v==null?"":v).slice(0,n);
+  const cantidad = v=>{
+    /* Las reglas exigen texto de máximo 12 caracteres en las cantidades.
+       Se acepta "1,50" y "1.50"; si no es un número utilizable se deja vacío.
+       El resultado NUNCA debe exceder 12 caracteres: String(Number(...)) puede
+       volver a pasarse (p. ej. 12345678901234567890 -> 1.2345678901234567e+19). */
+    const s = String(v==null?"":v).trim();
+    if(!s) return "";
+    if(s.length <= 12) return s;
+    const n = num(s);
+    if(n == null || !isFinite(n)) return "";
+    const f = String(n);
+    return f.length <= 12 ? f : String(Math.trunc(n)).slice(0, 12);
+  };
+  a.id = txt(a.id, 60) || uid();
+  a.fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(a.fecha||"")) ? a.fecha : hoy();
+  a.linea = ["","Volkswagen","Chevrolet"].includes(a.linea) ? a.linea : "";
+  a.folio = txt(a.folio, 60);
+  a.proveedor = txt(a.proveedor, 120);
+  a.encargado = txt(a.encargado, 120);
+  a.verificador = txt(a.verificador, 120);
+  a.paso = Math.min(6, Math.max(1, Math.trunc(num(a.paso) || 1)));
+  a.creado = Math.trunc(num(a.creado)) > 0 ? Math.trunc(num(a.creado)) : Date.now();
+  a.partidas = (Array.isArray(a.partidas) && a.partidas.length ? a.partidas : [linea0()]).slice(0, 20).map(p=>({
+    codigo: txt(p && p.codigo, 60),
+    desc:   txt(p && p.desc, 300),
+    fact:   cantidad(p && p.fact),
+    recib:  cantidad(p && p.recib),
+    real:   cantidad(p && p.real),
+    sicar:  cantidad(p && p.sicar),
+  }));
+  return a;
+}
+
 /* ¿El documento cumple ya el esquema que exigen las reglas de Firestore?
    Las reglas rechazan cualquier partida con codigo vacío, así que una auditoría
    recién abierta (con la fila en blanco) todavía NO se puede guardar.
@@ -474,6 +516,7 @@ function guardable(a){
 }
 
 async function guardar(){
+  A = normalizar(A);
   A.paso = Math.max(A.paso, 1);
   /* Trazabilidad: quién capturó y cuándo, para que un reporte no se pueda atribuir a otro. */
   if(usuario){ A.uid = usuario.uid; A.email = usuario.email || ""; }
