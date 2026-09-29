@@ -125,6 +125,19 @@ if (cloud) {
 }
 const COL = "auditorias";
 
+/* Envuelve una promesa con un límite de tiempo. Necesario porque, cuando una
+   extensión del navegador bloquea Firestore, el SDK reintenta para siempre y la
+   espera no termina nunca: el usuario ve la pantalla trabada sin explicación. */
+function conLimite(promesa, ms, accion){
+  return Promise.race([
+    promesa,
+    new Promise((_,rechazar)=>setTimeout(
+      ()=>rechazar({code:"timeout", message:`La operación de ${accion} excedió ${Math.round(ms/1000)} s. `+
+        `Suele deberse a un bloqueador de anuncios o a una red restringida que impide llegar a Firestore.`}),
+      ms))
+  ]);
+}
+
 /* Traduce los errores de Firestore a mensajes claros en español. */
 function firebaseError(err){
   const c = (err && err.code) || "";
@@ -141,6 +154,7 @@ function firebaseError(err){
   if(c==="failed-precondition") return "Firestore necesita un índice o la base de datos aún no está creada en la consola de Firebase.";
   if(c==="invalid-argument")  return "Datos inválidos al guardar en Firestore: "+err.message;
   if(c==="unauthenticated")   return "La sesión expiró. Vuelve a iniciar sesión.";
+  if(c==="timeout")           return err.message + " Desactiva el bloqueador de anuncios para este sitio o abre la app en una ventana de incógnito.";
   return "Error de Firebase" + (c ? " ("+c+")" : "") + ": " + ((err && err.message) || String(err));
 }
 
@@ -170,7 +184,7 @@ const store = {
   async all(){
     if(!cloud) return JSON.parse(localStorage.getItem(COL)||"[]");
     try{
-      const s = await getDocs(collection(db,COL)); return s.docs.map(d=>d.data());
+      const s = await conLimite(getDocs(collection(db,COL)), 15000, "leer"); return s.docs.map(d=>d.data());
     }catch(err){
       badgeError();
       throw new Error(firebaseError(err));
@@ -179,7 +193,10 @@ const store = {
   async save(a){
     if(!cloud){ const l=await this.all(); const i=l.findIndex(x=>x.id===a.id); i<0?l.push(a):l[i]=a; localStorage.setItem(COL,JSON.stringify(l)); return; }
     try{
-      await setDoc(doc(db,COL,a.id),a);
+      /* Si el navegador bloquea la petición (bloqueador de anuncios, ERR_BLOCKED_BY_CLIENT),
+         Firebase reintenta sin rendirse y el await nunca regresa. Se pone un límite de
+         tiempo para poder avisar al usuario en lugar de dejar la pantalla colgada. */
+      await conLimite(setDoc(doc(db,COL,a.id),a), 15000, "guardar");
     }catch(err){
       badgeError();
       throw new Error(firebaseError(err));
@@ -188,7 +205,7 @@ const store = {
   async remove(id){
     if(!cloud){ const l=(await this.all()).filter(x=>x.id!==id); localStorage.setItem(COL,JSON.stringify(l)); return; }
     try{
-      await deleteDoc(doc(db,COL,id));
+      await conLimite(deleteDoc(doc(db,COL,id)), 15000, "eliminar");
     }catch(err){
       badgeError();
       throw new Error(firebaseError(err));
