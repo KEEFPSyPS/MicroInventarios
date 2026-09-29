@@ -199,6 +199,21 @@ const store = {
       await conLimite(setDoc(doc(db,COL,a.id),a), 15000, "guardar");
     }catch(err){
       badgeError();
+      /* Las reglas exigen que el documento pertenezca a quien lo escribe
+         (esPropietario: resource.data.uid == request.auth.uid). Si el registro
+         lo capturó OTRA cuenta, o se guardó antes de tener sesión y quedó sin
+         uid, Firestore responde permission-denied y el mensaje genérico de
+         "revisa tu correo" despista. Se explica la causa real. */
+      if(err && err.code === "permission-denied"){
+        try{
+          const previo = (await this.all()).find(x=>x.id===a.id);
+          if(previo && previo.uid !== a.uid){
+            throw new Error("Esta auditoría la capturó otra cuenta" +
+              (previo.email ? " (" + previo.email + ")" : " (sin correo registrado)") +
+              ". Solo su autor puede modificarla. Abre una auditoría nueva o pide a gerencia que la borre.");
+          }
+        }catch(interior){ if(interior && interior.message) throw interior; }
+      }
       throw new Error(firebaseError(err));
     }
   },
@@ -208,6 +223,19 @@ const store = {
       await conLimite(deleteDoc(doc(db,COL,id)), 15000, "eliminar");
     }catch(err){
       badgeError();
+      /* Misma causa que en save(): la regla delete exige ser el dueño del
+         registro (o estar en la lista de gerencia). Si lo capturó otra cuenta,
+         el permission-denied genérico no explica nada al usuario. */
+      if(err && err.code === "permission-denied"){
+        try{
+          const previo = (await this.all()).find(x=>x.id===id);
+          if(previo && usuario && previo.uid !== usuario.uid){
+            throw new Error("Esta auditoría la capturó otra cuenta" +
+              (previo.email ? " (" + previo.email + ")" : " (sin correo registrado)") +
+              ". Solo su autor o gerencia pueden eliminarla.");
+          }
+        }catch(interior){ if(interior && interior.message) throw interior; }
+      }
       throw new Error(firebaseError(err));
     }
   }
@@ -461,6 +489,8 @@ const PASOS = [
 const puede = (a,n)=>PASOS.slice(0,n-1).every(p=>p.ok(a));
 
 let A = blank(), vista = "nueva", msg = "";
+/* Se activa si al normalizar hubo que recortar partidas sobrantes (>20). */
+let avisoLimite = false;
 
 /* Ajusta el documento al esquema que exigen las reglas de Firestore.
    Motivo: la app escribe con setDoc(), que REEMPLAZA el documento entero. Si al
@@ -493,7 +523,13 @@ function normalizar(a){
   a.verificador = txt(a.verificador, 120);
   a.paso = Math.min(6, Math.max(1, Math.trunc(num(a.paso) || 1)));
   a.creado = Math.trunc(num(a.creado)) > 0 ? Math.trunc(num(a.creado)) : Date.now();
-  a.partidas = (Array.isArray(a.partidas) && a.partidas.length ? a.partidas : [linea0()]).slice(0, 20).map(p=>({
+  /* Las reglas aceptan como máximo 20 partidas. Si un documento antiguo trajera
+     más (o se abriera desde un JSON manipulado), slice(0,20) descartaría filas
+     EN SILENCIO: el usuario creería haber guardado todo. Se avisa en lugar de
+     perder datos a escondidas. */
+  const filas = Array.isArray(a.partidas) && a.partidas.length ? a.partidas : [linea0()];
+  if(filas.length > 20) avisoLimite = true;
+  a.partidas = filas.slice(0, 20).map(p=>({
     codigo: txt(p && p.codigo, 60),
     desc:   txt(p && p.desc, 300),
     fact:   cantidad(p && p.fact),
@@ -516,8 +552,12 @@ function guardable(a){
 }
 
 async function guardar(){
+  avisoLimite = false;
   A = normalizar(A);
   A.paso = Math.max(A.paso, 1);
+  /* Sin sesión no se puede escribir: las reglas exigen uid y email del token.
+     Se avisa una sola vez y se evita el permission-denied confuso. */
+  if(cloud && !usuario) return false;
   /* Trazabilidad: quién capturó y cuándo, para que un reporte no se pueda atribuir a otro. */
   if(usuario){ A.uid = usuario.uid; A.email = usuario.email || ""; }
   A.actualizado = Date.now();
@@ -526,6 +566,9 @@ async function guardar(){
      un error que en realidad solo significa "aún no termino de capturar". */
   if(!guardable(A)) return false;
   await store.save(JSON.parse(JSON.stringify(A)));
+  /* Si hubo que descartar filas sobrantes, se informa: el guardado fue exitoso
+     pero incompleto, y el usuario debe saberlo. */
+  if(avisoLimite) msg = "Se guardaron las primeras 20 partidas: el límite por auditoría es 20. Las demás no se almacenaron.";
   return true;
 }
 
@@ -707,7 +750,11 @@ document.addEventListener("click",async e=>{
     if(b.id==="nNueva"){vista="nueva";return render();}
     if(b.id==="nHist"){vista="hist";return render();}
     if(b.dataset.go){const k=+b.dataset.go;if(k>=1&&puede(A,k)){A.paso=k;return render();}}
-    if(b.id==="add"){if(A.partidas.length<20)A.partidas.push(linea0());return render();}
+    if(b.id==="add"){
+      if(A.partidas.length<20) A.partidas.push(linea0());
+      else msg="El límite es 20 partidas por auditoría.";
+      return render();
+    }
     if(b.dataset.del){A.partidas.splice(+b.dataset.del,1);return render();}
     if(b.id==="sig"){
       A.paso=Math.min(6,A.paso+1);
@@ -726,7 +773,16 @@ document.addEventListener("click",async e=>{
       if(!guardado){ msg = "Para generar el reporte, completa fecha, línea, proveedor y al menos una partida con código, descripción y cantidad facturada."; return render(); }
       return crearPDF([A],`Folio ${A.folio} · ${A.proveedor}`);
     }
-    if(b.dataset.open){A=JSON.parse(JSON.stringify(window._list.find(x=>x.id===b.dataset.open)));vista="nueva";return render();}
+    if(b.dataset.open){
+      /* Si el registro ya no existe en la lista (lo borró otro usuario mientras
+         esta pantalla estaba abierta), find() devuelve undefined y todo el
+         render fallaría. Se avisa en vez de dejar la pantalla en blanco. */
+      const encontrado = (window._list||[]).find(x=>x.id===b.dataset.open);
+      if(!encontrado){ msg="Esa auditoría ya no existe. Actualiza el historial."; return renderHist(); }
+      A = normalizar(JSON.parse(JSON.stringify(encontrado)));
+      vista="nueva";
+      return render();
+    }
     if(b.dataset.pdf){const a=window._list.find(x=>x.id===b.dataset.pdf);return crearPDF([a],`Folio ${a.folio} · ${a.proveedor}`);}
     if(b.dataset.rm){if(confirm("¿Eliminar esta auditoría? No se puede deshacer.")){await store.remove(b.dataset.rm);}return renderHist();}
     if(b.id==="pdfDia"){
