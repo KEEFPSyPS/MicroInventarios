@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Microinventarios</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
@@ -416,13 +417,19 @@ function resultado(p){
 }
 const completa = a=>a.partidas.every(p=>p.recib!==""&&p.real!==""&&p.sicar!=="");
 function resumen(list){
-  let part=0,hall=0,falt=0,sobr=0,neto=0;
+  let part=0,hall=0,falt=0,sobr=0,neto=0,recib=0,real=0,fact=0;
   list.forEach(a=>a.partidas.forEach(p=>{
     if(p.recib===""||p.real===""||p.sicar==="")return;
     part++; if(resultado(p)!=="Conforme")hall++;
     const r=dR(p); if(r<0)falt+=-r; if(r>0)sobr+=r; neto+=dS(p);
+    fact+=num(p.fact)||0; recib+=num(p.recib)||0; real+=num(p.real)||0;
   }));
-  return {aud:list.length,part,hall,falt,sobr,neto};
+  /* Totales para ajustar inventario. Solo tienen valor como ajuste cuando la
+     recepción fue conforme: si Dif. recep. != 0, lo recibido no cuadra con la
+     factura y la suma no debe usarse para mover existencias. */
+  const recepcionConforme = (falt===0 && sobr===0);
+  const totalAjuste = recib + real;
+  return {aud:list.length,part,hall,falt,sobr,neto,fact,recib,real,recepcionConforme,totalAjuste};
 }
 
 /* ===== Pasos, en el orden obligatorio de captura ===== */
@@ -473,6 +480,17 @@ function paso(n){
       <label>Encargado que recibe<input data-f="encargado" value="${esc(A.encargado)}"></label>
     </div>${nav()}`;
   if(n===2) return `<h2>Partidas de la factura</h2><p class="hint">Copia cada renglón tal como viene en la factura: código, descripción y cantidad facturada.</p>
+    <div class="card" style="background:var(--acc2);border-color:#bcd3df;padding:14px">
+      <h2 style="font-size:17px">Cargar factura (XML CFDI o PDF)</h2>
+      <p class="hint" style="margin-bottom:8px">Extrae <strong>número de parte y cantidad</strong> automáticamente.
+      El archivo se lee <strong>solo en tu navegador</strong>: no se sube ni se guarda en la base de datos,
+      únicamente se registran las partidas que confirmes.</p>
+      <div class="row">
+        <input type="file" id="factura" accept=".xml,.pdf,application/xml,text/xml,application/pdf" style="max-width:340px">
+        <button class="btn sec" id="limpiarFact" hidden>Descartar archivo</button>
+      </div>
+      <div id="facturaMsg"></div>
+    </div>
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Cant. facturada</th><th></th></tr>
     ${filas((p,i)=>`<tr><td><input data-i="${i}" data-k="codigo" value="${esc(p.codigo)}"></td><td><input data-i="${i}" data-k="desc" value="${esc(p.desc)}"></td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="fact" value="${esc(p.fact)}"></td><td><button class="btn del" data-del="${i}" ${A.partidas.length<2?"disabled":""}>Quitar</button></td></tr>`)}
     </table></div><div class="bar"><button class="btn sec" id="add" ${A.partidas.length>=20?"disabled":""}>Agregar partida</button>${A.partidas.length>=20?`<span class="hint">Máximo 20 partidas por auditoría.</span>`:""}</div>${nav()}`;
@@ -498,10 +516,49 @@ function paso(n){
       <div class="kpi"><span>Piezas sobrantes</span><strong>${r.sobr}</strong></div>
       <div class="kpi ${r.neto?"bad":"ok"}"><span>Diferencia real vs SICAR</span><strong>${fmt(r.neto)}</strong></div>
     </div>
+    ${bloqueAjuste(r)}
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Facturada</th><th class="n">Recibida</th><th class="n">Real</th><th class="n">SICAR</th><th>Resultado</th></tr>
     ${filas(p=>`<tr class="${resultado(p)==="Conforme"?"":"hall"}"><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${p.fact}</td><td class="n">${p.recib}</td><td class="n">${p.real}</td><td class="n">${p.sicar}</td><td>${resultado(p)}</td></tr>`)}
     </table></div>
     <div class="bar"><button class="btn sec" data-go="5">Anterior</button><span class="row"><button class="btn sec" id="nuevo">Nueva auditoría</button><button class="btn" id="pdf">Descargar PDF</button></span></div>`;
+}
+
+/* Bloque de totales para ajustar inventario.
+   Se muestra el conteo total de Recibidos + Real, pero SOLO se presenta como
+   cifra utilizable para ajuste si Dif. recep. no tiene diferencias. */
+function bloqueAjuste(r){
+  const filasTot = `<div class="tw"><table>
+      <tr><th>Concepto</th><th class="n">Piezas</th></tr>
+      <tr><td>Total facturado</td><td class="n">${r.fact}</td></tr>
+      <tr><td>Total recibido</td><td class="n">${r.recib}</td></tr>
+      <tr><td>Total real en anaquel</td><td class="n">${r.real}</td></tr>
+      <tr><td><strong>Recibido + Real (conteo total)</strong></td><td class="n"><strong>${r.totalAjuste}</strong></td></tr>
+      <tr><td>Diferencia real vs SICAR</td><td class="n">${fmt(r.neto)}</td></tr>
+    </table></div>`;
+  if(r.recepcionConforme){
+    return `<div class="card" style="border-left:4px solid #2a7a4b">
+      <h2>Conteo total para ajuste de inventario</h2>
+      <p class="hint">La recepción fue <strong>conforme</strong>: Dif. recep. no presenta diferencias
+      (sin faltantes ni sobrantes), por lo que el conteo es confiable como base del ajuste.</p>
+      <div class="kpis">
+        <div class="kpi ok"><span>Recibidos</span><strong>${r.recib}</strong></div>
+        <div class="kpi ok"><span>+ Real</span><strong>${r.real}</strong></div>
+        <div class="kpi ok"><span>Total para ajustar</span><strong>${r.totalAjuste}</strong></div>
+      </div>
+      ${filasTot}
+      <p class="hint">Ajuste sugerido: fijar la existencia en <strong>${r.totalAjuste}</strong> piezas
+      (real + recibido). Si SICAR muestra otra cifra, la diferencia a mover es <strong>${fmt(r.neto)}</strong>.</p>
+    </div>`;
+  }
+  return `<div class="card" style="border-left:4px solid #b3391b">
+    <h2>Conteo total no utilizable para ajuste</h2>
+    <p class="hint">Dif. recep. <strong>sí tiene diferencias</strong>
+    (faltantes: ${r.falt}, sobrantes: ${r.sobr}), así que lo recibido no cuadra con la factura
+    y la suma <strong>no debe usarse</strong> para mover existencias hasta que se aclare la recepción.</p>
+    ${filasTot}
+    <p class="hint">Solo informativo. Resuelve primero la diferencia de recepción para que el conteo
+    sea válido como ajuste.</p>
+  </div>`;
 }
 
 async function renderHist(){
@@ -524,9 +581,53 @@ document.addEventListener("input",e=>{
   } else return;
   const s=$("#sig"); if(s) s.disabled=!PASOS[A.paso-1].ok(A);
 });
+document.addEventListener("change", async e=>{
+  const t = e.target;
+  if(t.id !== "factura") return;
+  const archivo = t.files && t.files[0];
+  if(!archivo) return;
+  const caja = document.getElementById("facturaMsg");
+  if(caja) caja.innerHTML = `<div class="msg">Leyendo <strong>${esc(archivo.name)}</strong>…</div>`;
+  const bLimpiar = document.getElementById("limpiarFact");
+  if(bLimpiar) bLimpiar.hidden = false;
+  try{
+    /* El archivo se procesa en memoria; en ningún momento se sube a un servidor. */
+    const res = await leerFactura(archivo);
+    /* Se emparejan los datos de cabecera del CFDI con el formulario. */
+    const cab = res.cabecera || {};
+    let aplicados = [];
+    if(cab.folio && !A.folio){ A.folio = cab.folio; aplicados.push("folio"); }
+    if(cab.proveedor && !A.proveedor){ A.proveedor = cab.proveedor; aplicados.push("proveedor"); }
+    if(cab.fecha && (!A.fecha || A.fecha===hoy())){ A.fecha = cab.fecha; aplicados.push("fecha"); }
+    pintarExtraccion(res, archivo.name);
+    if(aplicados.length){
+      const c2 = document.getElementById("facturaMsg");
+      if(c2) c2.insertAdjacentHTML("afterbegin",
+        `<div class="msg" style="background:var(--okbg);color:var(--ok)">También se tomaron del CFDI: ${aplicados.join(", ")}. Verifícalos en el Paso 1.</div>`);
+    }
+  }catch(err){
+    if(caja) caja.innerHTML = `<div class="msg">No se pudo leer el archivo: ${esc(err.message||err)}</div>`;
+  }finally{
+    /* Se limpia el input para que el archivo deje de estar referenciado. */
+    t.value = "";
+  }
+});
+
 document.addEventListener("click",async e=>{
   const b=e.target.closest("button"); if(!b) return;
   try{
+    if(b.id==="aplicarFact"){
+      const n = aplicarExtraccion();
+      facturaPendiente = null;
+      msg = n ? `Se cargaron ${n} partidas desde la factura. No se guardó ninguna copia del archivo.`
+              : "No se cargó ninguna partida: revisa que el código y la cantidad sean válidos.";
+      return render();
+    }
+    if(b.id==="cancelarFact" || b.id==="limpiarFact"){
+      facturaPendiente = null;
+      msg = "Archivo descartado. No se guardó nada.";
+      return render();
+    }
     if(b.id==="nNueva"){vista="nueva";return render();}
     if(b.id==="nHist"){vista="hist";return render();}
     if(b.dataset.go){const k=+b.dataset.go;if(k>=1&&puede(A,k)){A.paso=k;return render();}}
@@ -534,6 +635,184 @@ document.addEventListener("click",async e=>{
     if(b.dataset.del){A.partidas.splice(+b.dataset.del,1);return render();}
     if(b.id==="sig"){A.paso=Math.min(6,A.paso+1);await guardar();return render();}
     if(b.id==="nuevo"){A=blank();return render();}
+/* ===== Extracción de partidas desde la factura (XML CFDI o PDF) =====
+   IMPORTANTE: el archivo nunca se sube ni se guarda. Se lee en memoria con la
+   File API del navegador, se extraen número de parte y cantidad, y el objeto
+   File se descarta. A Firestore solo viajan las partidas confirmadas. */
+
+/* Normaliza una cantidad: admite "1", "1.000", "1,50", "1,234.56". */
+function aNumero(v){
+  if(v==null) return null;
+  let t=String(v).trim().replace(/[^\d.,-]/g,"");
+  if(!t) return null;
+  const uc=t.lastIndexOf(","), up=t.lastIndexOf(".");
+  if(uc>-1 && up>-1){
+    /* El último separador es el decimal; el otro es de miles. */
+    if(uc>up) t=t.replace(/\./g,"").replace(",",".");
+    else t=t.replace(/,/g,"");
+  }else if(uc>-1){
+    t = (t.length-uc-1===3 && /^\d{1,3}(,\d{3})+$/.test(t)) ? t.replace(/,/g,"") : t.replace(",",".");
+  }else if(up>-1){
+    /* Solo hay puntos: "1.000" son miles, pero "1.5" es decimal.
+       Se distingue porque el grupo de miles son exactamente 3 dígitos. */
+    t = /^\d{1,3}(\.\d{3})+$/.test(t) ? t.replace(/\./g,"") : t;
+  }
+  const n=Number(t);
+  return isFinite(n) ? n : null;
+}
+const limpia = s=>String(s??"").replace(/\s+/g," ").trim();
+
+/* --- XML CFDI 3.3 / 4.0 --- */
+function extraerXML(texto){
+  const doc = new DOMParser().parseFromString(texto,"application/xml");
+  if(doc.querySelector("parsererror")) throw new Error("El XML está dañado o no es un CFDI válido.");
+  /* Los conceptos del CFDI traen NoIdentificacion (número de parte) y Cantidad. */
+  let nodos = [...doc.getElementsByTagName("cfdi:Concepto")].concat([...doc.getElementsByTagName("Concepto")]);
+  nodos = nodos.filter((n,i,a)=>a.indexOf(n)===i);
+  /* Si el XML no es CFDI, se aceptan otros nombres de atributo. */
+  if(!nodos.length) nodos = [...doc.querySelectorAll("[NoIdentificacion],[Codigo],[SKU],[CodigoArticulo]")];
+  if(!nodos.length) throw new Error("No se encontraron conceptos en el XML. ¿Es una factura CFDI?");
+  const crudo = nodos.map(n=>{
+    const g=k=>n.getAttribute(k) || n.getAttribute(k.toLowerCase()) || "";
+    return {
+      codigo: limpia(g("NoIdentificacion") || g("Codigo") || g("SKU") || g("CodigoArticulo")),
+      desc:   limpia(g("Descripcion") || n.textContent),
+      fact:   aNumero(g("Cantidad"))
+    };
+  }).filter(p=>p.codigo || p.desc);
+  return {partidas:crudo, cabecera:leerCabeceraCFDI(doc), fuente:"XML CFDI"};
+}
+
+/* Toma folio, proveedor y fecha del comprobante, para no teclearlos tampoco. */
+function leerCabeceraCFDI(doc){
+  const g=(tag,attr)=>{const n=doc.getElementsByTagName(tag)[0];return n?(n.getAttribute(attr)||""):"";};
+  const emisor = doc.getElementsByTagName("cfdi:Emisor")[0] || doc.getElementsByTagName("Emisor")[0];
+  return {
+    folio:  limpia(g("cfdi:Comprobante","Folio")),
+    fecha:  limpia(g("cfdi:Comprobante","Fecha").slice(0,10)),
+    proveedor: limpia(emisor ? emisor.getAttribute("Nombre") : "")
+  };
+}
+
+/* --- PDF: se lee el texto de todas las páginas y se buscan renglones --- */
+async function extraerPDF(archivo){
+  const pdfjs = window.pdfjsLib;
+  if(!pdfjs) throw new Error("No se pudo cargar el lector de PDF. Revisa tu conexión y recarga la página.");
+  pdfjs.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const datos = await archivo.arrayBuffer();
+  const doc = await pdfjs.getDocument({data:datos}).promise;
+  const lineas = [];
+  for(let n=1;n<=doc.numPages;n++){
+    const pag = await doc.getPage(n);
+    const cont = await pag.getTextContent();
+    /* pdf.js entrega fragmentos sueltos: se agrupan por coordenada Y. */
+    const porY = new Map();
+    cont.items.forEach(it=>{
+      const y = Math.round(it.transform[5]);
+      if(!porY.has(y)) porY.set(y,[]);
+      porY.get(y).push({x:it.transform[4], t:it.str});
+    });
+    [...porY.entries()].sort((a,b)=>b[0]-a[0]).forEach(([,frs])=>{
+      const txt = frs.sort((a,b)=>a.x-b.x).map(f=>f.t).join(" ").replace(/\s+/g," ").trim();
+      if(txt) lineas.push(txt);
+    });
+  }
+  return lineas;
+}
+
+/* Interpreta cada renglón del PDF: código al inicio y cantidad al final.
+   Es heurística porque el PDF no tiene estructura; el usuario revisa y corrige. */
+function partidasDesdeLineas(lineas){
+  const out=[];
+  const basura = /^(subtotal|total|importe|iva|descuento|folio|fecha|rfc|factura|cliente|direcci|p[áa]gina|cantidad|precio|unidad|clave|no\.?\s*identif|descripci)/i;
+  lineas.forEach(l=>{
+    if(basura.test(l)) return;
+    /* Patrón: código ... cantidad (la cantidad suele cerrar el renglón). */
+    const m = l.match(/^([A-Za-z0-9][A-Za-z0-9._\-\/]{2,29})\s+(.{3,80}?)\s+(\d{1,6}(?:[.,]\d{1,3})?)\s*(?:pz|pza|pieza|piezas|kg|m|caja|paq|und)?\.?$/i);
+    if(!m) return;
+    const cant = aNumero(m[3]);
+    if(cant===null || cant<=0) return;
+    const codigo = limpia(m[1]), desc = limpia(m[2]);
+    /* Descarta renglones que en realidad son totales o claves fiscales. */
+    if(!codigo || /^\d{6,}$/.test(codigo)) return;
+    out.push({codigo, desc, fact:cant});
+  });
+  return out;
+}
+
+/* Orquesta la lectura: decide por extensión y tipo real del archivo. */
+async function leerFactura(archivo){
+  const nombre = (archivo.name||"").toLowerCase();
+  const esPdf = nombre.endsWith(".pdf") || archivo.type==="application/pdf";
+  if(esPdf){
+    const lineas = await extraerPDF(archivo);
+    return {partidas:partidasDesdeLineas(lineas), cabecera:{}, fuente:"PDF", lineas};
+  }
+  return extraerXML(await archivo.text());
+}
+
+
+/* Pinta la vista previa: el usuario decide qué se queda antes de guardar nada. */
+let facturaPendiente = null;
+function pintarExtraccion(res, nombreArchivo){
+  const caja = document.getElementById("facturaMsg");
+  if(!caja) return;
+  facturaPendiente = res;
+  const p = res.partidas;
+  if(!p.length){
+    const extra = res.lineas
+      ? `<details style="margin-top:8px"><summary>Ver el texto que se leyó del PDF (${res.lineas.length} líneas)</summary>
+         <pre style="max-height:220px;overflow:auto;background:#fff;border:1px solid var(--line);padding:8px;font-size:12px">${esc(res.lineas.slice(0,80).join("\n"))}</pre></details>`
+      : "";
+    caja.innerHTML = `<div class="msg">No se detectaron partidas en <strong>${esc(nombreArchivo)}</strong>.
+      Captura las partidas a mano.${extra}</div>`;
+    return;
+  }
+  caja.innerHTML = `<div class="card" style="margin-top:10px;border-left:4px solid var(--ok)">
+    <p class="hint" style="margin-bottom:8px"><strong>${p.length} partidas detectadas</strong> en ${esc(res.fuente)}.
+    Revisa y corrige lo que haga falta; solo se guardará lo que confirmes.</p>
+    <div class="tw"><table><tr><th>#</th><th>Código (no. de parte)</th><th>Descripción</th><th class="n">Cantidad</th><th>Usar</th></tr>
+    ${p.map((x,i)=>`<tr>
+      <td>${i+1}</td>
+      <td><input data-x="codigo" data-j="${i}" value="${esc(x.codigo)}"></td>
+      <td><input data-x="desc" data-j="${i}" value="${esc(x.desc)}"></td>
+      <td class="n"><input type="number" min="0" step="1" data-x="fact" data-j="${i}" value="${esc(x.fact)}"></td>
+      <td><input type="checkbox" data-x="usar" data-j="${i}" checked style="width:auto"></td>
+    </tr>`).join("")}
+    </table></div>
+    <div class="bar"><button class="btn" id="aplicarFact">Cargar ${p.length} partidas</button>
+    <button class="btn sec" id="cancelarFact">Cancelar</button></div>
+    <p class="hint" style="margin:8px 0 0">Al cargar, el archivo se descarta de la memoria. No se guarda ninguna copia.</p>
+  </div>`;
+}
+
+/* Vuelca lo confirmado en las partidas de la auditoría, sin tocar el archivo. */
+function aplicarExtraccion(){
+  if(!facturaPendiente) return 0;
+  const nuevas = facturaPendiente.partidas.map((x,i)=>({x,i}))
+    .filter(({i})=>{
+      const c = document.querySelector(`[data-x="usar"][data-j="${i}"]`);
+      return !c || c.checked;
+    })
+    .map(({x,i})=>{
+      const val=(k,def)=>{const el=document.querySelector(`[data-x="${k}"][data-j="${i}"]`);return el?el.value:def;};
+      return {codigo:limpia(val("codigo",x.codigo)), desc:limpia(val("desc",x.desc)), fact:String(aNumero(val("fact",x.fact))||"")};
+    })
+    .filter(x=>x.codigo && aNumero(x.fact)>0)
+    .map(x=>({codigo:x.codigo, desc:x.desc, fact:x.fact, recib:"", real:"", sicar:""}));
+  if(!nuevas.length) return 0;
+  /* Se respeta el tope de 20 partidas que exigen las reglas de Firestore. */
+  const libres = 20 - A.partidas.length;
+  const van = nuevas.slice(0, Math.max(0,libres));
+  /* Si solo había la fila vacía inicial, se reemplaza en vez de sumar basura. */
+  const soloVacia = A.partidas.length===1 && !A.partidas[0].codigo && !A.partidas[0].desc && A.partidas[0].fact==="";
+  A.partidas = (soloVacia ? [] : A.partidas).concat(van);
+  if(!A.partidas.length) A.partidas = [linea0()];
+  return van.length;
+}
+
+
+
     if(b.id==="pdf"){await guardar();return crearPDF([A],`Folio ${A.folio} · ${A.proveedor}`);}
     if(b.dataset.open){A=JSON.parse(JSON.stringify(window._list.find(x=>x.id===b.dataset.open)));vista="nueva";return render();}
     if(b.dataset.pdf){const a=window._list.find(x=>x.id===b.dataset.pdf);return crearPDF([a],`Folio ${a.folio} · ${a.proveedor}`);}
@@ -562,6 +841,22 @@ function crearPDF(list,titulo){
     head:[["Auditorías","Partidas","Con hallazgo","Faltantes en recepción","Sobrantes en recepción","Real vs SICAR (neto)"]],
     body:[[r.aud,r.part,r.hall,r.falt,r.sobr,fmt(r.neto)]]});
   y=d.lastAutoTable.finalY+24;
+  /* Conteo total para ajuste de inventario: solo se marca utilizable si
+     Dif. recep. no tiene diferencias en ninguna partida del reporte. */
+  d.setFont("helvetica","bold"); d.setFontSize(12); d.text("Conteo total para ajuste de inventario",M,y); y+=8;
+  d.autoTable({startY:y,margin:{left:M,right:M},theme:"grid",styles:{fontSize:9,cellPadding:5},
+    headStyles:{fillColor:r.recepcionConforme?[42,122,75]:[179,57,27]},
+    head:[["Total facturado","Total recibido","Total real en anaquel","Recibido + Real","Dif. real vs SICAR","¿Apto para ajuste?"]],
+    body:[[r.fact,r.recib,r.real,r.totalAjuste,fmt(r.neto),r.recepcionConforme?"Sí (Dif. recep. = 0)":"No (Dif. recep. != 0)"]],
+    columnStyles:{0:{halign:"right"},1:{halign:"right"},2:{halign:"right"},3:{halign:"right"},4:{halign:"right"}}});
+  y=d.lastAutoTable.finalY+10;
+  d.setFont("helvetica","italic"); d.setFontSize(8);
+  if(r.recepcionConforme){
+    d.text(`Ajuste sugerido: fijar la existencia en ${r.totalAjuste} piezas (real + recibido). Diferencia a mover vs SICAR: ${fmt(r.neto)}.`,M,y+8);
+  }else{
+    d.text(`No usar para ajuste: hay diferencias de recepción (faltantes: ${r.falt}, sobrantes: ${r.sobr}). Aclare la recepción primero.`,M,y+8);
+  }
+  y+=30;
   list.forEach((a,idx)=>{
     if(y>H-200){d.addPage();y=50;}
     d.setFont("helvetica","bold"); d.setFontSize(11);
@@ -573,7 +868,24 @@ function crearPDF(list,titulo){
       body:a.partidas.map(p=>[p.codigo,p.desc,p.fact,p.recib,fmt(dR(p)),p.real,p.sicar,fmt(dS(p)),resultado(p)]),
       columnStyles:{2:{halign:"right"},3:{halign:"right"},4:{halign:"right"},5:{halign:"right"},6:{halign:"right"},7:{halign:"right"}},
       didParseCell:h=>{ if(h.section==="body"&&h.row.raw[8]!=="Conforme"){h.cell.styles.fillColor=[251,234,229];} }});
-    y=d.lastAutoTable.finalY+50;
+    y=d.lastAutoTable.finalY+10;
+    /* Conteo por folio, con la misma regla: usar la suma solo si Dif. recep. = 0.
+       Se divide en dos líneas porque el aviso supera el ancho útil de la página. */
+    const ra=resumen([a]);
+    d.setFont("helvetica","bold"); d.setFontSize(9);
+    if(ra.recepcionConforme){
+      d.setTextColor(42,122,75);
+      d.text(`Conteo total para ajuste: recibido ${ra.recib} + real ${ra.real} = ${ra.totalAjuste} piezas.`,M,y);
+      d.setFont("helvetica","normal");
+      d.text("Dif. recep. sin diferencias: la suma es confiable para ajustar el inventario.",M,y+11);
+    }else{
+      d.setTextColor(179,57,27);
+      d.text(`Conteo total informativo: recibido ${ra.recib} + real ${ra.real} = ${ra.totalAjuste} piezas.`,M,y);
+      d.setFont("helvetica","normal");
+      d.text(`NO usar para ajuste: Dif. recep. con diferencias (faltantes ${ra.falt}, sobrantes ${ra.sobr}). Aclare la recepción.`,M,y+11);
+    }
+    d.setTextColor(27,36,48);
+    y+=40;
     if(y>H-70){d.addPage();y=90;}
     d.setDrawColor(27,36,48); d.setFontSize(8);
     [[a.encargado,"Encargado de recepción"],[a.verificador,"Verificador"],["","Gerencia"]].forEach((s,i)=>{
