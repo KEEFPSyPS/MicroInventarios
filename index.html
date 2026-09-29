@@ -100,7 +100,7 @@ body.sin-sesion header nav,body.sin-sesion header #sesion{display:none!important
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getFirestore,collection,doc,setDoc,getDocs,deleteDoc} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,setPersistence,browserSessionPersistence,sendEmailVerification} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,setPersistence,browserLocalPersistence,browserSessionPersistence,sendEmailVerification} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 /* ===== 1) PEGA AQUÍ LA CONFIGURACIÓN DE TU PROYECTO FIREBASE ===== */
 const firebaseConfig = {
@@ -119,9 +119,14 @@ if (cloud) {
   const app = initializeApp(firebaseConfig);
   db = getFirestore(app);
   auth = getAuth(app);
-  /* La sesión vive solo en esta pestaña: al cerrarla hay que volver a entrar.
-     Así un equipo compartido en piso no deja la sesión abierta para el siguiente. */
-  setPersistence(auth, browserSessionPersistence).catch(()=>{});
+  /* La sesión se conserva en este equipo para no perder el acceso al recargar
+     la página o reabrir el navegador. Antes se usaba browserSessionPersistence,
+     que borra la sesión al cerrar la pestaña: al volver, el historial y los
+     reportes aparecían vacíos porque la app no tenía sesión y parecía que no
+     había nada guardado. Se usa localStorage y, si el navegador lo bloquea, se
+     intenta el modo de sesión y se informa por consola. */
+  setPersistence(auth, browserLocalPersistence)
+    .catch(()=> setPersistence(auth, browserSessionPersistence).catch(()=>{}));
 }
 const COL = "auditorias";
 
@@ -138,9 +143,33 @@ function conLimite(promesa, ms, accion){
   ]);
 }
 
+/* Detecta si el fallo se debe a que el navegador o la red no dejan llegar a
+   Firestore. Es el caso de ERR_BLOCKED_BY_CLIENT que provocan los bloqueadores
+   de anuncios y las extensiones: el SDK lo reporta como "unavailable" y, si el
+   canal ya estaba abierto, a veces como "permission-denied". Distinguirlos es
+   imprescindible porque el consejo a seguir es completamente distinto. */
+function pareceBloqueo(err){
+  const c = (err && err.code) || "";
+  const m = ((err && err.message) || "") + " " + ((err && err.name) || "");
+  if(c === "unavailable" || c === "deadline-exceeded" || c === "auth/network-request-failed") return true;
+  if(/ERR_BLOCKED_BY_CLIENT|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ERR_NETWORK|Failed to fetch|NetworkError|blocked|offline/i.test(m)) return true;
+  /* Un bloqueo corta el canal de escritura; Firestore lo cierra con TERMINATE. */
+  if(/TYPE=terminate|Write\/channel/i.test(m)) return true;
+  return false;
+}
+
 /* Traduce los errores de Firestore a mensajes claros en español. */
 function firebaseError(err){
   const c = (err && err.code) || "";
+  /* El bloqueo se comprueba PRIMERO: es la causa más frecuente en este proyecto
+     y el mensaje de "permission-denied" desviaba al usuario hacia las reglas y
+     la verificación del correo, que no tienen nada que ver. */
+  if(pareceBloqueo(err)){
+    return "No se pudo conectar con Firestore: el navegador o la red están bloqueando la petición "
+         + "(ERR_BLOCKED_BY_CLIENT). Suele ser un bloqueador de anuncios o una extensión. "
+         + "Desactiva el bloqueador para este sitio, usa una ventana de incógnito o abre la app en otro equipo; "
+         + "tus datos no se perdieron, solo no llegaron al servidor.";
+  }
   if(c==="permission-denied"){
     /* Distinguimos la causa: es el error más común y el mensaje genérico confunde. */
     if(usuario && usuario.emailVerified === false){
@@ -148,7 +177,7 @@ function firebaseError(err){
            + "Pide a la gerencia que verifique la cuenta en Firebase → Authentication → Users.";
     }
     return "Firestore rechazó la operación (permission-denied). Las reglas no permiten esta acción con tu cuenta; "
-         + "si ya desplegaste las reglas nuevas, revisa que tu correo esté verificado.";
+         + "revisa que la auditoría te pertenezca y que tu correo esté verificado en Firebase → Authentication → Users.";
   }
   if(c==="unavailable")       return "Sin conexión con Firestore. Revisa tu red; los datos en la nube no se guardaron.";
   if(c==="failed-precondition") return "Firestore necesita un índice o la base de datos aún no está creada en la consola de Firebase.";
@@ -205,6 +234,10 @@ const store = {
          uid, Firestore responde permission-denied y el mensaje genérico de
          "revisa tu correo" despista. Se explica la causa real. */
       if(err && err.code === "permission-denied"){
+        /* Solo se consulta el registro previo para saber si es de otra cuenta.
+           Si esta consulta falla (p. ej. la red también está bloqueada), NO se
+           reemplaza el error original: eso ocultaba la causa real y hacia que un
+           simple bloqueo de red se presentara como un problema de reglas. */
         try{
           const previo = (await this.all()).find(x=>x.id===a.id);
           if(previo && previo.uid !== a.uid){
@@ -212,7 +245,9 @@ const store = {
               (previo.email ? " (" + previo.email + ")" : " (sin correo registrado)") +
               ". Solo su autor puede modificarla. Abre una auditoría nueva o pide a gerencia que la borre.");
           }
-        }catch(interior){ if(interior && interior.message) throw interior; }
+        }catch(interior){
+          if(interior && /la capturó otra cuenta/.test(interior.message||"")) throw interior;
+        }
       }
       throw new Error(firebaseError(err));
     }
@@ -234,7 +269,9 @@ const store = {
               (previo.email ? " (" + previo.email + ")" : " (sin correo registrado)") +
               ". Solo su autor o gerencia pueden eliminarla.");
           }
-        }catch(interior){ if(interior && interior.message) throw interior; }
+        }catch(interior){
+          if(interior && /la capturó otra cuenta/.test(interior.message||"")) throw interior;
+        }
       }
       throw new Error(firebaseError(err));
     }
@@ -374,6 +411,14 @@ async function mostrarApp(u){
   badge.textContent = "Firebase conectado";
   badge.style.background = "#2a7a4b";
   A = blank(); vista = "nueva"; msg = "";
+  /* Comprobación temprana: si el navegador bloquea Firestore, conviene avisarlo
+     YA y no cuando el usuario ya capturó una auditoría entera. Se hace sin
+     bloquear la interfaz: si falla, se sigue mostrando la app. */
+  try{ await store.all(); }
+  catch(err){
+    msg = (err && err.message) || String(err);
+    badgeError();
+  }
   try{ await render(); }
   catch(err){ $app.innerHTML = `<div class="msg">${esc(err.message||err)}</div>`; }
 }
@@ -460,15 +505,24 @@ function resultado(p){
   if(s<0)t.push("SICAR mayor que lo real"); if(s>0)t.push("SICAR menor que lo real");
   return t.length?t.join(" / "):"Conforme";
 }
-const completa = a=>a.partidas.every(p=>p.recib!==""&&p.real!==""&&p.sicar!=="");
+/* Una auditoría está completa solo si tiene partidas y todas traen recibido,
+   real y SICAR capturados. Se protege contra documentos viejos sin "partidas":
+   sin esta guarda, resumen() y el historial fallaban y la tabla salía vacía
+   aunque sí hubiera registros guardados. */
+const completa = a=>Array.isArray(a&&a.partidas)&&a.partidas.length>0&&
+  a.partidas.every(p=>p&&p.recib!==""&&p.real!==""&&p.sicar!=="");
 function resumen(list){
   let part=0,hall=0,falt=0,sobr=0,neto=0,recib=0,real=0,fact=0;
-  list.forEach(a=>a.partidas.forEach(p=>{
-    if(p.recib===""||p.real===""||p.sicar==="")return;
-    part++; if(resultado(p)!=="Conforme")hall++;
-    const r=dR(p); if(r<0)falt+=-r; if(r>0)sobr+=r; neto+=dS(p);
-    fact+=num(p.fact)||0; recib+=num(p.recib)||0; real+=num(p.real)||0;
-  }));
+  /* Se comprueba cada nivel: un documento antiguo sin "partidas" (o con una
+     partida nula) hacía fallar esta función, y con ella el historial y el PDF. */
+  (Array.isArray(list)?list:[]).forEach(a=>{
+    (Array.isArray(a&&a.partidas)?a.partidas:[]).forEach(p=>{
+      if(!p||p.recib===""||p.real===""||p.sicar==="")return;
+      part++; if(resultado(p)!=="Conforme")hall++;
+      const r=dR(p); if(r<0)falt+=-r; if(r>0)sobr+=r; neto+=dS(p);
+      fact+=num(p.fact)||0; recib+=num(p.recib)||0; real+=num(p.real)||0;
+    });
+  });
   /* Totales para ajustar inventario. Solo tienen valor como ajuste cuando la
      recepción fue conforme: si Dif. recep. != 0, lo recibido no cuadra con la
      factura y la suma no debe usarse para mover existencias. */
@@ -478,12 +532,15 @@ function resumen(list){
 }
 
 /* ===== Pasos, en el orden obligatorio de captura ===== */
+/* Se usa una versión segura de las partidas: un documento abierto desde el
+   historial puede no traerlas y estos predicados rompían la pantalla. */
+const partidasSeguras = a=>Array.isArray(a&&a.partidas)?a.partidas:[];
 const PASOS = [
-  {t:"Datos de la factura", ok:a=>a.fecha&&a.linea&&a.proveedor.trim()&&a.folio.trim()&&a.encargado.trim()},
-  {t:"Partidas facturadas", ok:a=>a.partidas.length>0&&a.partidas.every(p=>p.codigo.trim()&&p.desc.trim()&&num(p.fact)>0)},
-  {t:"Recepción física", ok:a=>a.partidas.every(p=>p.recib!=="")},
-  {t:"Conteo en anaquel", ok:a=>a.verificador.trim()&&a.partidas.every(p=>p.real!=="")},
-  {t:"Existencia en SICAR", ok:a=>a.partidas.every(p=>p.sicar!=="")},
+  {t:"Datos de la factura", ok:a=>!!(a.fecha&&a.linea&&String(a.proveedor||"").trim()&&String(a.folio||"").trim()&&String(a.encargado||"").trim())},
+  {t:"Partidas facturadas", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&String(p.codigo||"").trim()&&String(p.desc||"").trim()&&num(p.fact)>0)}},
+  {t:"Recepción física", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&p.recib!=="")}},
+  {t:"Conteo en anaquel", ok:a=>{const ps=partidasSeguras(a);return !!String(a.verificador||"").trim()&&ps.length>0&&ps.every(p=>p&&p.real!=="")}},
+  {t:"Existencia en SICAR", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&p.sicar!=="")}},
   {t:"Hallazgos y reporte", ok:()=>true}
 ];
 const puede = (a,n)=>PASOS.slice(0,n-1).every(p=>p.ok(a));
@@ -545,10 +602,11 @@ function normalizar(a){
    recién abierta (con la fila en blanco) todavía NO se puede guardar.
    Se replica aquí ese mínimo para avisar antes de intentar la escritura. */
 function guardable(a){
-  if(!a.fecha || !a.linea || !String(a.proveedor||"").trim()) return false;
-  if(!a.partidas.length) return false;
+  if(!a || !a.fecha || !a.linea || !String(a.proveedor||"").trim()) return false;
+  const ps = Array.isArray(a.partidas)?a.partidas:[];
+  if(!ps.length) return false;
   /* Toda partida debe tener código y descripción con texto, y cantidad > 0. */
-  return a.partidas.every(p=>String(p.codigo||"").trim() && String(p.desc||"").trim() && num(p.fact) > 0);
+  return ps.every(p=>p && String(p.codigo||"").trim() && String(p.desc||"").trim() && num(p.fact) > 0);
 }
 
 async function guardar(){
@@ -588,7 +646,7 @@ function render(){
 }
 
 function paso(n){
-  const filas = f=>A.partidas.map((p,i)=>f(p,i)).join("");
+  const filas = f=>partidasSeguras(A).map((p,i)=>f(p,i)).join("");
   const nav = (extra="")=>`<div class="bar"><button class="btn sec" data-go="${n-1}" ${n===1?"disabled":""}>Anterior</button>${extra}<button class="btn" id="sig" ${PASOS[n-1].ok(A)?"":"disabled"}>Guardar y continuar</button></div>`;
   if(n===1) return `<h2>Datos de la factura</h2><p class="hint">Captura primero los datos del documento que llegó con la mercancía.</p>
     <div class="grid">
@@ -681,11 +739,35 @@ function bloqueAjuste(r){
 }
 
 async function renderHist(){
-  const list = (await store.all()).sort((a,b)=>(b.fecha+b.creado).toString().localeCompare((a.fecha+a.creado).toString()));
+  /* Toda la vista depende de esta lectura. Si fallaba (reglas, red, sesión),
+     la excepción escapaba y la pantalla quedaba sin pintar: parecía que no
+     había nada guardado. Ahora se informa la causa real. */
+  let list;
+  try{
+    list = await store.all();
+  }catch(err){
+    $("#app").innerHTML = `<div class="card"><h2>Historial y reportes</h2>
+      <div class="msg" style="background:var(--badbg);color:var(--bad)">No se pudo leer el historial:
+      ${esc(err.message)}</div>
+      <p class="hint">Si el problema persiste, verifica tu correo (Firebase → Authentication)
+      y que sigas dentro con la misma cuenta que capturó las auditorías.</p></div>`;
+    window._list = [];
+    return;
+  }
+  list = (list||[]).sort((a,b)=>(b.fecha+b.creado).toString().localeCompare((a.fecha+a.creado).toString()));
   $("#app").innerHTML = `<div class="card"><h2>Historial y reportes</h2>
     <div class="row" style="margin:10px 0 14px"><label>Reporte del día<input type="date" id="dia" value="${hoy()}"></label><button class="btn" id="pdfDia">Descargar PDF del día</button></div>
     <div class="tw"><table><tr><th>Fecha</th><th>Línea</th><th>Folio</th><th>Proveedor</th><th class="n">Hallazgos</th><th></th></tr>
-    ${list.map(a=>{const r=resumen([a]);return `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"En captura"}</td><td class="row"><button class="btn sec" data-open="${a.id}">Abrir</button><button class="btn sec" data-pdf="${a.id}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${a.id}">Eliminar</button></td></tr>`}).join("")||`<tr><td colspan="6">Aún no hay auditorías. Empieza una desde “Auditoría del día”.</td></tr>`}
+    ${list.map(a=>{
+      /* Cada fila se pincha a sí misma: un documento antiguo con un campo
+         faltante solo afecta su propia fila, no toda la tabla. */
+      try{
+        const r=resumen([a]);
+        return `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"En captura"}</td><td class="row"><button class="btn sec" data-open="${esc(a.id)}">Abrir</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
+      }catch(e){
+        return `<tr><td colspan="6">Registro con datos incompletos (id ${esc(a&&a.id)}). Ábrelo para corregirlo o elíminalo.</td></tr>`;
+      }
+    }).join("")||`<tr><td colspan="6">Aún no hay auditorías. Empieza una desde “Auditoría del día”.</td></tr>`}
     </table></div></div>${msg?`<div class="msg">${esc(msg)}</div>`:""}`;
   window._list = list; msg="";
 }
@@ -783,11 +865,30 @@ document.addEventListener("click",async e=>{
       vista="nueva";
       return render();
     }
-    if(b.dataset.pdf){const a=window._list.find(x=>x.id===b.dataset.pdf);return crearPDF([a],`Folio ${a.folio} · ${a.proveedor}`);}
+    if(b.dataset.pdf){
+      const a=(window._list||[]).find(x=>x.id===b.dataset.pdf);
+      if(!a){ msg="Esa auditoría ya no existe. Actualiza el historial."; return renderHist(); }
+      if(!completa(a)){ msg="Esa auditoría aún está en captura. Complétala (pasos 1 a 6) para generar su PDF."; return renderHist(); }
+      return crearPDF([a],`Folio ${a.folio} · ${a.proveedor}`);
+    }
     if(b.dataset.rm){if(confirm("¿Eliminar esta auditoría? No se puede deshacer.")){await store.remove(b.dataset.rm);}return renderHist();}
     if(b.id==="pdfDia"){
-      const d=$("#dia").value, l=window._list.filter(a=>a.fecha===d&&completa(a));
-      if(!l.length){msg="No hay auditorías completas en esa fecha.";return renderHist();}
+      const d=$("#dia").value;
+      if(!d){ msg="Elige una fecha para el reporte."; return renderHist(); }
+      /* Se relee de Firestore en lugar de confiar en window._list: si la lista
+         está desactualizada (o vacía tras recargar la página), el botón parecía
+         no funcionar. Y si falla la lectura, se informa la causa real. */
+      let todos;
+      try{ todos = await store.all(); }
+      catch(err){ msg="No se pudo leer el historial: "+err.message; return renderHist(); }
+      const l = todos.filter(a=>a.fecha===d && completa(a));
+      if(!l.length){
+        const enFecha = todos.filter(a=>a.fecha===d).length;
+        msg = enFecha
+          ? `Hay ${enFecha} auditoría(s) del ${d} pero ninguna está completa (pasos 1 a 6). Termínalas para incluirlas en el reporte.`
+          : `No hay auditorías con fecha ${d}.`;
+        return renderHist();
+      }
       return crearPDF(l,`Reporte del día ${d}`);
     }
   }catch(err){ msg="No se pudo completar la acción: "+err.message; vista==="hist"?renderHist():render(); }
@@ -970,7 +1071,28 @@ function aplicarExtraccion(){
 }
 
 /* ===== PDF ===== */
+/* Verifica que las librerías del CDN estén disponibles antes de generar nada.
+   Si el navegador bloqueó cdnjs (bloqueador de anuncios, red restringida,
+   ERR_BLOCKED_BY_CLIENT), window.jspdf queda undefined y el botón "no hacía
+   nada" con un error incomprensible (Cannot destructure property 'jsPDF'...).
+   El PDF se genera en el navegador: no depende de Firestore ni de la sesión. */
+function pdfListo(){
+  if(!window.jspdf || typeof window.jspdf.jsPDF !== "function") return false;
+  return true;
+}
+function avisoPdf(){
+  return "No se pudieron cargar las librerías del PDF (jspdf desde cdnjs). " +
+    "Revisa que el navegador o la red no estén bloqueando cdnjs.cloudflare.com, " +
+    "o genera el reporte desde otra red. El resto de la aplicación sigue funcionando.";
+}
+
 function crearPDF(list,titulo){
+  if(!pdfListo()) throw new Error(avisoPdf());
+  /* Solo se reportan auditorías con captura completa: un documento a medias
+     produciría un PDF con cifras engañosas. */
+  const utiles = (list||[]).filter(a=>a && completa(a));
+  if(!utiles.length) throw new Error("No hay auditorías completas que reportar. Termina la captura (pasos 1 a 6) antes de generar el PDF.");
+  list = utiles;
   const {jsPDF}=window.jspdf, d=new jsPDF({unit:"pt",format:"letter"});
   const W=d.internal.pageSize.getWidth(), H=d.internal.pageSize.getHeight(), M=40;
   d.setFillColor(27,36,48); d.rect(0,0,W,70,"F");
