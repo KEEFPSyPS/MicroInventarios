@@ -588,9 +588,13 @@ function normalizar(a){
      perder datos a escondidas. */
   const filas = Array.isArray(a.partidas) && a.partidas.length ? a.partidas : [linea0()];
   if(filas.length > 20) avisoLimite = true;
+  /* Se escriben SIEMPRE los seis campos del esquema, aunque el origen los traiga
+     incompletos. partidaValida() de firestore.rules usa hasOnly() y comprueba
+     `is string` en fact/recib/real/sicar: un `undefined` (campo ausente) o un
+     número hacían fallar el guardado COMPLETO con permission-denied. */
   a.partidas = filas.slice(0, 20).map(p=>({
-    codigo: txt(p && p.codigo, 60),
-    desc:   txt(p && p.desc, 300),
+    codigo: txt(p && p.codigo, TOPE_CODIGO),
+    desc:   txt(p && p.desc, TOPE_DESC),
     fact:   cantidad(p && p.fact),
     recib:  cantidad(p && p.recib),
     real:   cantidad(p && p.real),
@@ -602,13 +606,18 @@ function normalizar(a){
 /* ¿El documento cumple ya el esquema que exigen las reglas de Firestore?
    Las reglas rechazan cualquier partida con codigo vacío, así que una auditoría
    recién abierta (con la fila en blanco) todavía NO se puede guardar.
-   Se replica aquí ese mínimo para avisar antes de intentar la escritura. */
+   Se replica aquí ese mínimo para avisar antes de intentar la escritura,
+   incluyendo los topes de longitud de codigo (60) y desc (300). */
 function guardable(a){
   if(!a || !a.fecha || !a.linea || !String(a.proveedor||"").trim()) return false;
   const ps = Array.isArray(a.partidas)?a.partidas:[];
-  if(!ps.length) return false;
-  /* Toda partida debe tener código y descripción con texto, y cantidad > 0. */
-  return ps.every(p=>p && String(p.codigo||"").trim() && String(p.desc||"").trim() && num(p.fact) > 0);
+  if(!ps.length || ps.length > 20) return false;
+  /* Toda partida debe tener código y descripción con texto dentro de los topes,
+     y cantidad > 0. Coincide con partidaValida() de firestore.rules. */
+  return ps.every(p=>p
+    && String(p.codigo||"").trim() && String(p.codigo||"").length <= TOPE_CODIGO
+    && String(p.desc||"").trim() && String(p.desc||"").length <= TOPE_DESC
+    && num(p.fact) > 0);
 }
 
 async function guardar(){
@@ -938,6 +947,8 @@ const cantidadTexto = v=>{
   return s.length <= 12 ? s : String(Math.trunc(n)).slice(0, 12);
 };
 const limpia = s=>String(s??"").replace(/\s+/g," ").trim();
+/* Topes de longitud que impone firestore.rules a cada partida. */
+const TOPE_DESC = 300, TOPE_CODIGO = 60;
 
 /* --- XML CFDI 3.3 / 4.0 --- */
 function extraerXML(texto){
@@ -951,24 +962,37 @@ function extraerXML(texto){
   if(!nodos.length) throw new Error("No se encontraron conceptos en el XML. ¿Es una factura CFDI?");
   const crudo = nodos.map(n=>{
     const g=k=>n.getAttribute(k) || n.getAttribute(k.toLowerCase()) || "";
+    /* Se devuelven los SEIS campos que exige partidaValida() de firestore.rules.
+       Antes faltaban recib/real/sicar: la partida quedaba incompleta y las reglas
+       rechazaban el documento ENTERO con permission-denied si por cualquier ruta
+       no pasaba por aplicarExtraccion() (que era quien los agregaba después). */
     return {
-      codigo: limpia(g("NoIdentificacion") || g("Codigo") || g("SKU") || g("CodigoArticulo")),
-      desc:   limpia(g("Descripcion") || n.textContent),
+      /* Los topes replican `p.codigo.size() <= 60` y `p.desc.size() <= 300`
+         de partidaValida(): una descripción larga del CFDI hacía fallar el
+         guardado completo con permission-denied. */
+      codigo: limpia(g("NoIdentificacion") || g("Codigo") || g("SKU") || g("CodigoArticulo")).slice(0, TOPE_CODIGO),
+      desc:   limpia(g("Descripcion") || n.textContent).slice(0, TOPE_DESC),
       /* Se entrega TEXTO: las reglas exigen `p.fact is string`. */
-      fact:   cantidadTexto(g("Cantidad"))
+      fact:   cantidadTexto(g("Cantidad")),
+      /* Lo facturado llega con la cantidad; lo recibido se captura en el Paso 2. */
+      recib:  "",
+      real:   "",
+      sicar:  ""
     };
   }).filter(p=>p.codigo || p.desc);
   return {partidas:crudo, cabecera:leerCabeceraCFDI(doc), fuente:"XML CFDI"};
 }
 
-/* Toma folio, proveedor y fecha del comprobante, para no teclearlos tampoco. */
+/* Toma folio, proveedor y fecha del comprobante, para no teclearlos tampoco.
+   Los recortes replican los topes de contenidoValido() (folio 60, proveedor 120):
+   una razón social larga hacía que el guardado fallara con permission-denied. */
 function leerCabeceraCFDI(doc){
   const g=(tag,attr)=>{const n=doc.getElementsByTagName(tag)[0];return n?(n.getAttribute(attr)||""):"";};
   const emisor = doc.getElementsByTagName("cfdi:Emisor")[0] || doc.getElementsByTagName("Emisor")[0];
   return {
-    folio:  limpia(g("cfdi:Comprobante","Folio")),
+    folio:  limpia(g("cfdi:Comprobante","Folio")).slice(0, 60),
     fecha:  limpia(g("cfdi:Comprobante","Fecha").slice(0,10)),
-    proveedor: limpia(emisor ? emisor.getAttribute("Nombre") : "")
+    proveedor: limpia(emisor ? emisor.getAttribute("Nombre") : "").slice(0, 120)
   };
 }
 
@@ -1013,7 +1037,17 @@ function partidasDesdeLineas(lineas){
     const codigo = limpia(m[1]), desc = limpia(m[2]);
     /* Descarta renglones que en realidad son totales o claves fiscales. */
     if(!codigo || /^\d{6,}$/.test(codigo)) return;
-    out.push({codigo, desc, fact:cant});
+    /* Se entregan los SEIS campos del esquema (ver partidaValida() en
+       firestore.rules): recib/real/sicar vacíos, para que la partida esté
+       completa aunque no pase por aplicarExtraccion(). */
+    out.push({
+      codigo: codigo.slice(0, TOPE_CODIGO),
+      desc:   desc.slice(0, TOPE_DESC),
+      fact:   cant,
+      recib:  "",
+      real:   "",
+      sicar:  ""
+    });
   });
   return out;
 }
@@ -1077,9 +1111,19 @@ function aplicarExtraccion(){
       /* cantidadTexto() garantiza TEXTO y el máximo de 12 caracteres que
          exigen las reglas de Firestore. Antes se usaba String(aNumero(...)||""),
          que convertía "0" en "" y dejaba pasar notaciones largas. */
-      return {codigo:limpia(val("codigo",x.codigo)), desc:limpia(val("desc",x.desc)), fact:cantidadTexto(val("fact",x.fact))};
+      /* Los topes replican el tamaño máximo que aceptan las reglas para codigo
+         (60) y desc (300): sin ellos, una descripción larga del CFDI hacía que
+         Firestore rechazara el documento completo con permission-denied. */
+      return {
+        codigo: limpia(val("codigo",x.codigo)).slice(0, TOPE_CODIGO),
+        desc:   limpia(val("desc",x.desc)).slice(0, TOPE_DESC),
+        fact:   cantidadTexto(val("fact",x.fact))
+      };
     })
     .filter(x=>x.codigo && aNumero(x.fact)>0)
+    /* Se completan los SEIS campos del esquema aquí y también en extraerXML():
+       partidaValida() de firestore.rules exige que existan TODOS, aunque vayan
+       vacíos. Si faltara uno solo, Firestore rechaza el documento completo. */
     .map(x=>({codigo:x.codigo, desc:x.desc, fact:x.fact, recib:"", real:"", sicar:""}));
   if(!nuevas.length) return 0;
   /* Se respeta el tope de 20 partidas que exigen las reglas de Firestore. */
