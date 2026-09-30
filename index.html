@@ -607,9 +607,13 @@ function normalizar(a){
    Las reglas rechazan cualquier partida con codigo vacío, así que una auditoría
    recién abierta (con la fila en blanco) todavía NO se puede guardar.
    Se replica aquí ese mínimo para avisar antes de intentar la escritura,
-   incluyendo los topes de longitud de codigo (60) y desc (300). */
+   incluyendo los topes de longitud de codigo (60) y desc (300).
+   OJO: `linea` puede ser "" (contenidoValido() acepta ['', 'Volkswagen',
+   'Chevrolet']); exigirla con texto bloquearía auditorías que Firestore SÍ
+   aceptaría. Solo se comprueba que sea uno de los valores permitidos. */
 function guardable(a){
-  if(!a || !a.fecha || !a.linea || !String(a.proveedor||"").trim()) return false;
+  if(!a || !a.fecha || !["","Volkswagen","Chevrolet"].includes(a.linea)
+     || !String(a.proveedor||"").trim()) return false;
   const ps = Array.isArray(a.partidas)?a.partidas:[];
   if(!ps.length || ps.length > 20) return false;
   /* Toda partida debe tener código y descripción con texto dentro de los topes,
@@ -958,7 +962,7 @@ function extraerXML(texto){
   let nodos = [...doc.getElementsByTagName("cfdi:Concepto")].concat([...doc.getElementsByTagName("Concepto")]);
   nodos = nodos.filter((n,i,a)=>a.indexOf(n)===i);
   /* Si el XML no es CFDI, se aceptan otros nombres de atributo. */
-  if(!nodos.length) nodos = [...doc.querySelectorAll("[NoIdentificacion],[Codigo],[SKU],[CodigoArticulo]")];
+  if(!nodos.length) nodos = [...doc.querySelectorAll("[NoIdentificacion],[Codigo],[SKU],[CodigoArticulo],[ClaveProdServ]")];
   if(!nodos.length) throw new Error("No se encontraron conceptos en el XML. ¿Es una factura CFDI?");
   const crudo = nodos.map(n=>{
     const g=k=>n.getAttribute(k) || n.getAttribute(k.toLowerCase()) || "";
@@ -970,7 +974,11 @@ function extraerXML(texto){
       /* Los topes replican `p.codigo.size() <= 60` y `p.desc.size() <= 300`
          de partidaValida(): una descripción larga del CFDI hacía fallar el
          guardado completo con permission-denied. */
-      codigo: limpia(g("NoIdentificacion") || g("Codigo") || g("SKU") || g("CodigoArticulo")).slice(0, TOPE_CODIGO),
+      /* ClaveProdServ va AL FINAL como respaldo: en el CFDI es obligatoria,
+         mientras que NoIdentificacion (el número de parte) es OPCIONAL. Sin este
+         respaldo, un comprobante que solo trae ClaveProdServ dejaba `codigo`
+         vacío y partidaValida() lo rechazaba (exige `p.codigo.size() > 0`). */
+      codigo: limpia(g("NoIdentificacion") || g("Codigo") || g("SKU") || g("CodigoArticulo") || g("ClaveProdServ")).slice(0, TOPE_CODIGO),
       desc:   limpia(g("Descripcion") || n.textContent).slice(0, TOPE_DESC),
       /* Se entrega TEXTO: las reglas exigen `p.fact is string`. */
       fact:   cantidadTexto(g("Cantidad")),
@@ -980,7 +988,16 @@ function extraerXML(texto){
       sicar:  ""
     };
   }).filter(p=>p.codigo || p.desc);
-  return {partidas:crudo, cabecera:leerCabeceraCFDI(doc), fuente:"XML CFDI"};
+  /* Aviso: una partida SIN código no se puede guardar. partidaValida() exige
+     `p.codigo.size() > 0`, así que ese documento daría permission-denied. Se
+     informa con el conteo y el nombre del atributo alterno (ClaveProdServ, que
+     es obligatorio en el CFDI) para que la causa quede explícita. */
+  const sinCodigo = crudo.filter(p=>!p.codigo).length;
+  const aviso = sinCodigo
+    ? `Atención: ${sinCodigo} de ${crudo.length} partida(s) no traen código de artículo. ` +
+      `Captúralo a mano (sugerencia: usa la clave de producto del SAT).`
+    : "";
+  return {partidas:crudo, cabecera:leerCabeceraCFDI(doc), fuente:"XML CFDI", aviso};
 }
 
 /* Toma folio, proveedor y fecha del comprobante, para no teclearlos tampoco.
@@ -1083,6 +1100,7 @@ function pintarExtraccion(res, nombreArchivo){
   caja.innerHTML = `<div class="card" style="margin-top:10px;border-left:4px solid var(--ok)">
     <p class="hint" style="margin-bottom:8px"><strong>${p.length} partidas detectadas</strong> en ${esc(res.fuente)}.
     Revisa y corrige lo que haga falta; solo se guardará lo que confirmes.</p>
+    ${res.aviso ? `<div class="msg" style="margin-bottom:8px">${esc(res.aviso)}</div>` : ""}
     <div class="tw"><table><tr><th>#</th><th>Código (no. de parte)</th><th>Descripción</th><th class="n">Cantidad</th><th>Usar</th></tr>
     ${p.map((x,i)=>`<tr>
       <td>${i+1}</td>
@@ -1120,6 +1138,10 @@ function aplicarExtraccion(){
         fact:   cantidadTexto(val("fact",x.fact))
       };
     })
+    /* El filtro exige código porque partidaValida() rechaza `codigo` vacío
+       (`p.codigo.size() > 0`). extraerXML() ya garantiza un código mediante el
+       respaldo ClaveProdServ, así que solo se descarta si el usuario borró el
+       campo a mano o la cantidad quedó en cero. */
     .filter(x=>x.codigo && aNumero(x.fact)>0)
     /* Se completan los SEIS campos del esquema aquí y también en extraerXML():
        partidaValida() de firestore.rules exige que existan TODOS, aunque vayan
