@@ -3,17 +3,6 @@ rules_version = '2';
 /* ============================================================================
    Reglas de seguridad de Cloud Firestore — Microinventarios de recepción
    ----------------------------------------------------------------------------
-   ESQUEMA VIGENTE (v2 — sin Paso 5):
-     · La auditoría tiene CINCO pasos (antes seis). El Paso 5 era "Existencia en
-       SICAR" y se eliminó por completo, junto con su columna "Dif. sistema" del
-       PDF: por eso `paso` va de 1 a 5 y cada partida tiene CINCO campos
-       (codigo, desc, fact, recib, real), sin `sicar`.
-     · Los documentos guardados con la versión anterior (paso 6, partidas con
-       `sicar`) NO se pueden volver a guardar tal cual: hasOnly() rechaza el
-       campo extra y el rango de paso los rechaza. La app los normaliza al
-       abrirlos (descarta `sicar` y baja el paso a 5), así que se corrigen solos
-       con reabrirlos y guardarlos una vez.
-
    Principios aplicados (estándar internacional):
      · ISO/IEC 27001:2022 A.5.15 (control de acceso) y A.8.3 (restricción de acceso a la información)
      · OWASP ASVS 4.0 V4.1/V4.2 (control de acceso a nivel de función y de dato)
@@ -68,33 +57,17 @@ service cloud.firestore {
 
     /* ---------- Validación de esquema de una auditoría ---------- */
 
-    /* Una partida solo admite estos cinco campos, todos de texto acotado.
-       IMPORTANTE (límite de evaluación): Firestore corta cada petición a ~1,000
-       expresiones evaluadas. Con la versión anterior (size() > 0 && size() <= N
-       más `is string`, por campo) cada partida gastaba ~45 expresiones, así que
-       20 partidas (justo lo que trae una factura importada) rebasaban el tope y
-       la regla fallaba como permission-denied, mientras que capturar pocas
-       partidas a mano sí cabía. Con matches() se valida tipo Y longitud en UNA
-       sola expresión por campo: si el valor no es texto, matches() da error y
-       la petición se deniega igual que antes. Costo aproximado: ~20 por partida.
-       [\\s\\S] cuenta también saltos de línea, igual que size().
-
-       `codigo` admite CERO caracteres ({0,60}, antes {1,60}) a propósito: una
-       auditoría recién creada trae la fila en blanco obligatoria del formulario
-       y, sin esto, el Paso 1 no se podía guardar NUNCA. Efecto medible: el folio
-       no aparecía en el historial y no había forma de retomarlo, así que no se
-       podían llevar varios folios a la vez. Las partidas de verdad se siguen
-       exigiendo: guardable() (en la app) solo intenta el documento completo con
-       codigo y descripción capturados, y el botón "Guardar y continuar" del
-       Paso 2 no avanza sin ellos.
-
-       `sicar` SE ELIMINÓ de la lista (antes eran seis campos): la app ya no captura
-       la existencia del sistema. Como hasOnly() rechaza campos extra, un documento
-       guardado con la versión anterior —que todavía trae `sicar`— no se podría
-       volver a guardar; la app lo descarta en normalizar(), así que basta con
-       reabrir ese folio y guardarlo una vez para que quede dentro del esquema. */
+    /* Una partida admite EXACTAMENTE estos cinco campos, todos de texto acotado
+       (el campo `sicar` ya no existe: la app dejó de enviarlo en el Paso 5).
+       `codigo` admite vacío ({0,60}) porque la app guarda borradores desde el
+       Paso 1 con la fila en blanco.
+       Límite de evaluación: Firestore corta cada petición a ~1,000 expresiones.
+       Con matches() se valida tipo y longitud en UNA sola expresión por campo,
+       para que quepan las 20 partidas de una factura importada.
+       [\\s\\S] cuenta también saltos de línea. */
     function partidaValida(p) {
       return p.keys().hasOnly(['codigo','desc','fact','recib','real'])
+          && p.keys().hasAll(['codigo','desc','fact','recib','real'])
           && p.codigo.matches('^[\\s\\S]{0,60}$')
           && p.desc.matches('^[\\s\\S]{0,300}$')
           && p.fact.matches('^[\\s\\S]{0,12}$')
@@ -138,7 +111,7 @@ service cloud.firestore {
       let d = request.resource.data;
       return partidasValidas(d.partidas)
           && d.linea in ['', 'Volkswagen', 'Chevrolet']
-          && d.paso is int && d.paso >= 1 && d.paso <= 5
+          && d.paso is int && d.paso >= 1 && d.paso <= 6
           && d.fecha is string && d.fecha.matches('^\\d{4}-\\d{2}-\\d{2}$')
           && d.folio is string && d.folio.size() <= 60
           && d.proveedor is string && d.proveedor.size() <= 120
