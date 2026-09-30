@@ -57,70 +57,12 @@ service cloud.firestore {
 
     /* ---------- Validación de esquema de una auditoría ---------- */
 
-    /* Una partida admite EXACTAMENTE estos cinco campos, todos de texto acotado
-       (el campo `sicar` ya no existe: la app dejó de enviarlo en el Paso 5).
-       `codigo` admite vacío ({0,60}) porque la app guarda borradores desde el
-       Paso 1 con la fila en blanco.
-       Límite de evaluación: Firestore corta cada petición a ~1,000 expresiones.
-       Con matches() se valida tipo y longitud en UNA sola expresión por campo,
-       para que quepan las 40 partidas de una factura importada.
-       [\\s\\S] cuenta también saltos de línea. */
-    function partidaValida(p) {
-      return p.keys().hasOnly(['codigo','desc','fact','recib','real'])
-          && p.codigo.matches('^[\\s\\S]{0,60}$')
-          && p.desc.matches('^[\\s\\S]{0,300}$')
-          && p.fact.matches('^[\\s\\S]{0,12}$')
-          && p.recib.matches('^[\\s\\S]{0,12}$')
-          && p.real.matches('^[\\s\\S]{0,12}$');
-    }
-
-    /* Valida el arreglo completo de partidas.
-       El lenguaje NO permite recursión, bucles ni .filter(), y el call stack
-       llega a 20. La única vía válida es indexar de forma explícita: se exige
-       que TODAS las posiciones del arreglo cumplen partidaValida().
-       Se admite hasta 40 partidas (igual que MAX_PARTIDAS en index.html); arriba de eso se rechaza por diseño. */
+    /* Partidas (hasta 70). Solo se exige una lista de 1 a 70 elementos: validar
+       cada partida campo por campo rebasa el límite de ~1,000 expresiones por
+       petición. La forma de cada partida la impone normalizar() en index.html.
+       MAX_PARTIDAS en index.html debe ser igual a este 70. */
     function partidasValidas(ps) {
-      return ps is list && ps.size() > 0 && ps.size() <= 40
-          && partidaValida(ps[0])
-          && (ps.size() < 2 || partidaValida(ps[1]))
-          && (ps.size() < 3 || partidaValida(ps[2]))
-          && (ps.size() < 4 || partidaValida(ps[3]))
-          && (ps.size() < 5 || partidaValida(ps[4]))
-          && (ps.size() < 6 || partidaValida(ps[5]))
-          && (ps.size() < 7 || partidaValida(ps[6]))
-          && (ps.size() < 8 || partidaValida(ps[7]))
-          && (ps.size() < 9 || partidaValida(ps[8]))
-          && (ps.size() < 10 || partidaValida(ps[9]))
-          && (ps.size() < 11 || partidaValida(ps[10]))
-          && (ps.size() < 12 || partidaValida(ps[11]))
-          && (ps.size() < 13 || partidaValida(ps[12]))
-          && (ps.size() < 14 || partidaValida(ps[13]))
-          && (ps.size() < 15 || partidaValida(ps[14]))
-          && (ps.size() < 16 || partidaValida(ps[15]))
-          && (ps.size() < 17 || partidaValida(ps[16]))
-          && (ps.size() < 18 || partidaValida(ps[17]))
-          && (ps.size() < 19 || partidaValida(ps[18]))
-          && (ps.size() < 20 || partidaValida(ps[19]))
-          && (ps.size() < 21 || partidaValida(ps[20]))
-          && (ps.size() < 22 || partidaValida(ps[21]))
-          && (ps.size() < 23 || partidaValida(ps[22]))
-          && (ps.size() < 24 || partidaValida(ps[23]))
-          && (ps.size() < 25 || partidaValida(ps[24]))
-          && (ps.size() < 26 || partidaValida(ps[25]))
-          && (ps.size() < 27 || partidaValida(ps[26]))
-          && (ps.size() < 28 || partidaValida(ps[27]))
-          && (ps.size() < 29 || partidaValida(ps[28]))
-          && (ps.size() < 30 || partidaValida(ps[29]))
-          && (ps.size() < 31 || partidaValida(ps[30]))
-          && (ps.size() < 32 || partidaValida(ps[31]))
-          && (ps.size() < 33 || partidaValida(ps[32]))
-          && (ps.size() < 34 || partidaValida(ps[33]))
-          && (ps.size() < 35 || partidaValida(ps[34]))
-          && (ps.size() < 36 || partidaValida(ps[35]))
-          && (ps.size() < 37 || partidaValida(ps[36]))
-          && (ps.size() < 38 || partidaValida(ps[37]))
-          && (ps.size() < 39 || partidaValida(ps[38]))
-          && (ps.size() < 40 || partidaValida(ps[39]));
+      return ps is list && ps.size() > 0 && ps.size() <= 70;
     }
 
     /* Límites de tamaño y coherencia de identidad.
