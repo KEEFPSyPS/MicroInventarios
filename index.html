@@ -42,6 +42,16 @@ th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertic
 th{font-size:13px;color:var(--mut);font-weight:600;background:var(--acc2)}
 td input{margin:0;padding:7px 8px}
 td.n,th.n{text-align:right;width:110px}
+.avance{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:10px;background:var(--acc2);color:var(--acc);font-size:12px;font-weight:600;white-space:nowrap}
+/* Diálogo propio (no confirm()): al abrir otro folio hay TRES caminos posibles
+   (guardar y empezar otro, retomar el pendiente, cancelar) y el texto necesita
+   formato para explicar dónde queda cada folio. */
+.dlg{max-width:520px;border:1px solid var(--line);border-radius:6px;padding:20px;background:#fff;color:var(--tx);font:14px/1.5 system-ui,Segoe UI,Arial,sans-serif}
+.dlg::backdrop{background:rgba(0,0,0,.45)}
+.dlg h2{margin-bottom:8px}
+.dlg p{margin-bottom:10px}
+.dlg .bar{margin-top:16px}
+.avisoFolio .msg{margin:0 0 10px}
 .neg{color:var(--bad);font-weight:700}.pos{color:#8a5a00;font-weight:700}.z{color:var(--ok)}
 tr.hall td{background:var(--badbg)}
 .bar{display:flex;justify-content:space-between;gap:10px;margin-top:16px;flex-wrap:wrap}
@@ -624,6 +634,29 @@ function guardable(a){
     && num(p.fact) > 0);
 }
 
+/* ¿Se puede GUARDAR MIENTRAS SE CAPTURA? Versión laxa de guardable().
+   Motivo: una auditoría recién empezada todavía no tiene partidas capturadas
+   (con la fila en blanco inicial, que el propio blank() crea a propósito), así
+   que guardable() da false y el Paso 1 nunca se persistía. Consecuencia real:
+   el folio NO aparecía en el historial y era imposible retomarlo más tarde.
+   El único requisito que las reglas imponen de verdad para el borrador es que
+   `codigo` (uno de los seis campos, con hasOnly) esté PRESENTE aunque vaya
+   vacío: parte de `^[\\s\\S]{1,60}$` a `{0,60}` justo para permitir la fila
+   recién creada (ver partidaValida() en firestore.rules). */
+function guardableBorrador(a){
+  const ps = Array.isArray(a&&a.partidas)?a.partidas:[];
+  if(!ps.length || ps.length > 20) return false;
+  return ps.every(p=>p
+    && String(p.codigo??"").length <= TOPE_CODIGO
+    && String(p.desc??"").length   <= TOPE_DESC
+    /* Las tres cantidades NO pueden quedar en notación larga: las reglas
+       aceptan máximo 12 caracteres y el documento completo se rechazaría. */
+    && String(p.fact??"").length  <= 12
+    && String(p.recib??"").length <= 12
+    && String(p.real??"").length  <= 12
+    && String(p.sicar??"").length <= 12);
+}
+
 async function guardar(){
   avisoLimite = false;
   A = normalizar(A);
@@ -636,9 +669,16 @@ async function guardar(){
   A.actualizado = Date.now();
   /* Se omite la escritura mientras el documento no cumpla el esquema: si se
      enviara, las reglas lo rechazarían con permission-denied y el usuario vería
-     un error que en realidad solo significa "aún no termino de capturar". */
-  if(!guardable(A)) return false;
+     un error que en realidad solo significa "aún no termino de capturar".
+     Se acepta el BORRADOR (mientras se captura) para que cada folio quede en
+     Firestore desde el Paso 1: así aparece en el historial y se puede retomar
+     después, aunque todavía no tenga partidas con código. */
+  if(!guardable(A) && !guardableBorrador(A)) return false;
   await store.save(JSON.parse(JSON.stringify(A)));
+  /* Se recuerda la huella de lo que acaba de quedar a salvo: es lo que apaga el
+     aviso de "Avance todavía sin guardar" y lo que evita ofrecer guardar dos veces
+     el mismo folio al pulsar "Empezar otro folio". */
+  A.hist = huella(A);
   /* Si hubo que descartar filas sobrantes, se informa: el guardado fue exitoso
      pero incompleto, y el usuario debe saberlo. */
   if(avisoLimite) msg = "Se guardaron las primeras 20 partidas: el límite por auditoría es 20. Las demás no se almacenaron.";
@@ -662,15 +702,36 @@ function render(){
 
 function paso(n){
   const filas = f=>partidasSeguras(A).map((p,i)=>f(p,i)).join("");
+  /* `extra` va ANTES de "Guardar y continuar" a propósito: el botón que avanza de
+     paso es siempre el último de la barra y no debe moverse de sitio entre pasos. */
   const nav = (extra="")=>`<div class="bar"><button class="btn sec" data-go="${n-1}" ${n===1?"disabled":""}>Anterior</button>${extra}<button class="btn" id="sig" ${PASOS[n-1].ok(A)?"":"disabled"}>Guardar y continuar</button></div>`;
-  if(n===1) return `<h2>Datos de la factura</h2><p class="hint">Captura primero los datos del documento que llegó con la mercancía.</p>
+  /* El botón para abrir otro folio se agrega a la barra ya construida y NO se
+     ofrece en el Paso 1: ahí es donde el usuario ya está capturando el folio
+     nuevo, así que el botón solo estorbaría. */
+  const navFueraDe1 = extra=>(vista==="hist" ? nav(extra) : nav(`<span class="avisoFolio">${vista==="nueva"?avisoSinGuardar():""}</span>`+extra));
+  if(n===1) return `<h2>Datos de la factura</h2>
+    ${avisoSinGuardar()}
+    <p class="hint">Captura primero los datos del documento que llegó con la mercancía.
+    Si ya tienes el XML o el PDF de la factura, cárgalo aquí y el folio, el proveedor y la fecha se llenan solos.
+    ¿Llegó más de una factura? En los pasos siguientes tienes <strong>Empezar otro folio</strong>:
+    este se queda guardado en el historial y lo retomas cuando quieras.</p>
+    <div class="card" style="background:var(--acc2);border-color:#bcd3df;padding:14px">
+      <h2 style="font-size:17px">Traer datos de la factura (XML CFDI o PDF)</h2>
+      <p class="hint" style="margin-bottom:8px">Toma <strong>folio, proveedor y fecha</strong> de la factura y, si es XML,
+      también sus partidas. El archivo se lee <strong>solo en tu navegador</strong>: no se sube ni se guarda.</p>
+      <div class="row">
+        <input type="file" id="factura" accept=".xml,.pdf,application/xml,text/xml,application/pdf" style="max-width:340px">
+        <button class="btn sec" id="limpiarFact" hidden>Descartar archivo</button>
+      </div>
+      <div id="facturaMsg"></div>
+    </div>
     <div class="grid">
       <label>Fecha de recepción<input type="date" data-f="fecha" value="${esc(A.fecha)}"></label>
       <label>Línea<select data-f="linea"><option value="">Selecciona…</option>${["Volkswagen","Chevrolet"].map(l=>`<option ${A.linea===l?"selected":""}>${l}</option>`).join("")}</select></label>
       <label>Proveedor<input data-f="proveedor" value="${esc(A.proveedor)}"></label>
       <label>Folio de factura<input data-f="folio" value="${esc(A.folio)}"></label>
       <label>Encargado que recibe<input data-f="encargado" value="${esc(A.encargado)}"></label>
-    </div>${nav()}`;
+    </div>`;
   if(n===2) return `<h2>Partidas de la factura</h2><p class="hint">Copia cada renglón tal como viene en la factura: código, descripción y cantidad facturada.</p>
     <div class="card" style="background:var(--acc2);border-color:#bcd3df;padding:14px">
       <h2 style="font-size:17px">Cargar factura (XML CFDI o PDF)</h2>
@@ -685,20 +746,20 @@ function paso(n){
     </div>
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Cant. facturada</th><th></th></tr>
     ${filas((p,i)=>`<tr><td><input data-i="${i}" data-k="codigo" value="${esc(p.codigo)}"></td><td><input data-i="${i}" data-k="desc" value="${esc(p.desc)}"></td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="fact" value="${esc(p.fact)}"></td><td><button class="btn del" data-del="${i}" ${A.partidas.length<2?"disabled":""}>Quitar</button></td></tr>`)}
-    </table></div><div class="bar"><button class="btn sec" id="add" ${A.partidas.length>=20?"disabled":""}>Agregar partida</button>${A.partidas.length>=20?`<span class="hint">Máximo 20 partidas por auditoría.</span>`:""}</div>${nav()}`;
+    </table></div><div class="bar"><button class="btn sec" id="add" ${A.partidas.length>=20?"disabled":""}>Agregar partida</button>${A.partidas.length>=20?`<span class="hint">Máximo 20 partidas por auditoría.</span>`:""}${botonOtroFolio()}</div>${nav()}`;
   if(n===3) return `<h2>Recepción física</h2><p class="hint">Cuenta lo que realmente llegó, pieza por pieza, y captura la cantidad recibida de cada partida.</p>
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Facturada</th><th class="n">Recibida</th><th class="n">Diferencia</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${esc(p.fact)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="recib" value="${esc(p.recib)}"></td><td class="n" data-d="${i}">${p.recib===""?"":`<span class="${cls(dR(p))}">${fmt(dR(p))}</span>`}</td></tr>`)}
-    </table></div>${nav()}`;
+    </table></div>${navFueraDe1(botonOtroFolio())}`;
   if(n===4) return `<h2>Conteo en anaquel</h2><p class="hint">Lo hace el verificador, por separado del encargado. Las cantidades esperadas no se muestran para que el conteo sea independiente: cuenta la existencia total de cada código en su ubicación.</p>
     <div class="grid"><label>Verificador<input data-f="verificador" value="${esc(A.verificador)}"></label></div>
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Existencia real</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="real" value="${esc(p.real)}"></td></tr>`)}
-    </table></div>${nav()}`;
+    </table></div>${navFueraDe1(botonOtroFolio())}`;
   if(n===5) return `<h2>Existencia en SICAR</h2><p class="hint">Con la entrada de la factura ya registrada en SICAR, captura la existencia que muestra el sistema para cada código.</p>
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Existencia SICAR</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="sicar" value="${esc(p.sicar)}"></td></tr>`)}
-    </table></div>${nav()}`;
+    </table></div>${navFueraDe1(botonOtroFolio())}`;
   const r=resumen([A]);
   return `<h2>Hallazgos de la auditoría</h2><p class="hint">Folio ${esc(A.folio)} · ${esc(A.proveedor)} · ${esc(A.linea)} · ${esc(A.fecha)}</p>
     <div class="kpis">
@@ -712,7 +773,126 @@ function paso(n){
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Facturada</th><th class="n">Recibida</th><th class="n">Real</th><th class="n">SICAR</th><th>Resultado</th></tr>
     ${filas(p=>`<tr class="${resultado(p)==="Conforme"?"":"hall"}"><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${p.fact}</td><td class="n">${p.recib}</td><td class="n">${p.real}</td><td class="n">${p.sicar}</td><td>${resultado(p)}</td></tr>`)}
     </table></div>
-    <div class="bar"><button class="btn sec" data-go="5">Anterior</button><span class="row"><button class="btn sec" id="nuevo">Nueva auditoría</button><button class="btn" id="pdf">Descargar PDF</button></span></div>`;
+    <div class="bar"><button class="btn sec" data-go="5">Anterior</button><span class="row">${botonOtroFolio()}<button class="btn" id="pdf">Descargar PDF</button></span></div>`;
+}
+
+/* ¿Vale la pena guardar lo que hay en pantalla? Misma condición que usa el botón
+   "Empezar otro folio": si el usuario no capturó NADA (la pantalla recién abierta,
+   sin folio, sin proveedor y con la fila en blanco), no hay nada que guardar y no
+   se le molesta con avisos. */
+function hayAvance(a){
+  if(!a) return false;
+  if(String(a.folio||"").trim() || String(a.proveedor||"").trim() || String(a.encargado||"").trim()
+     || String(a.verificador||"").trim()) return true;
+  return partidasSeguras(a).some(p=>p && (p.codigo||p.desc||p.fact||p.recib||p.real||p.sicar));
+}
+
+/* Aviso que evita el fallo silencioso más probable de la captura: escribir el
+   folio en pantalla y cerrar o cambiar de vista sin pulsar "Guardar y continuar",
+   con lo que el trabajo se pierde y el folio nunca aparece en el historial.
+   Se mide contra lo que hay GUARDADO en A.hist (huella de la última escritura),
+   no contra una bandera de "sucio": así el aviso desaparece exactamente cuando el
+   avance ya está a salvo en Firestore. */
+function avisoSinGuardar(){
+  if(huella(A) === A.hist) return "";
+  return `<div class="msg" style="background:#fdf3d7;color:#8a5a00">
+    <strong>Avance todavía sin guardar.</strong>
+    Si sales de esta pantalla ahora, este folio no aparecerá en el historial.
+    Pulsa <strong>Guardar y continuar</strong> para conservarlo y poder retomarlo después.</div>`;
+}
+
+/* Huella del avance capturado. Puede ser "optimista" (marcar algo como guardado
+   que las reglas rechacen): en ese caso se pierde un aviso, nunca datos.
+   En cambio, si dijera que NO hay cambios cuando sí los hay, el aviso de
+   "sin guardar" se apagaría solo y el avance se perdería en silencio. */
+function huella(a){
+  return [a && a.folio, a && a.fecha, a && a.linea, a && a.proveedor,
+          a && a.encargado, a && a.verificador, a && a.paso,
+          partidasSeguras(a).map(p=>[p&&p.codigo,p&&p.desc,p&&p.fact,p&&p.recib,p&&p.real,p&&p.sicar].join("\u0001")).join("\u0002")
+         ].join("\u0000");
+}
+
+/* Botón para abrir OTRO folio sin perder el que está en pantalla.
+   NO se exige el documento completo (guardable()): eso era precisamente lo que
+   dejaba folios sin ninguna forma de guardarlos. Basta el borrador, porque cada
+   folio se guarda con su propio id y así se pueden llevar varios a la vez. */
+function botonOtroFolio(){
+  if(!hayAvance(A)) return "";
+  return `<button class="btn sec" id="nuevoFolio" title="Este folio se guarda y queda en el historial como En captura, para retomarlo cuando quieras">Empezar otro folio</button>`;
+}
+
+/* Diálogo con las salidas reales del encargado: dejar el folio actual a medias
+   (queda en el historial) o retomar el que se quedó pendiente. Se usa <dialog>
+   nativo en vez de confirm(): ahí solo caben dos botones y aquí se ofrecen TRES
+   caminos, y además el texto admite formato para explicar dónde queda cada folio. */
+function elegirFolio(folioActual, pendiente, avance){
+  return new Promise(resolver=>{
+    const d = document.createElement("dialog");
+    d.className = "dlg";
+    d.innerHTML = `
+      <h2>Empezar otro folio</h2>
+      <p class="hint">${avance && folioActual ? `El folio <strong>${esc(folioActual)}</strong> está en pantalla.` : "El folio en pantalla ya se guardó."}</p>
+      ${avance ? `<p>Se guarda tal como va y queda en el historial como <strong>En captura</strong>.
+        Lo retomas cuando quieras con <strong>Reanudar</strong>: no se pierde nada y no hay que terminarlo ahora.</p>` : ""}
+      <div class="bar">
+        <button class="btn sec" data-x="cancelar">Mejor lo termino ahora</button>
+        ${avance ? `<button class="btn sec" data-x="guardar">Guardar y empezar otro</button>` : ""}
+        ${pendiente ? `<button class="btn" data-x="retomar">Retomar ${esc(pendiente.folio||"el folio pendiente")}</button>` : ""}
+        ${avance ? `<button class="btn" data-x="nuevo">Empezar uno nuevo en blanco</button>` : ""}
+      </div>
+      ${pendiente && pendiente.folio ? `<p class="hint">Pendiente en el servidor: <strong>${esc(pendiente.folio)}</strong> · ${esc(pendiente.proveedor||"sin proveedor")} · Paso ${esc(String(pendiente.paso||1))}</p>` : ""}`;
+    document.body.appendChild(d);
+    /* Un clic fuera del diálogo devuelve cancelar: nunca debe quedar la pantalla
+       bloqueada esperando una decisión. */
+    d.addEventListener("click", ev=>{ if(ev.target === d) resolver(cerrar(d, "cancelar")); });
+    d.addEventListener("click", ev=>{
+      const b = ev.target.closest && ev.target.closest("button[data-x]");
+      if(!b) return;
+      resolver(cerrar(d, b.dataset.x));
+    });
+    d.showModal();
+  });
+}
+function cerrar(d, r){ try{ d.close(); }catch(err){} d.remove(); return r; }
+
+/* Guarda el folio en pantalla y busca el borrador más antiguo que quedó a medias.
+   Solo se consulta Firestore si hace falta (el historial ya trae la lista).
+   Devuelve true si conviene que el usuario decida: hay algo en pantalla sin
+   guardar, o hay otro folio "En captura" esperando a ser retomado. */
+async function otroFolio(){
+  const avance = hayAvance(A);
+  /* `reabrible` filtra los documentos que de verdad se pueden retomar: los que
+     tienen folio/proveedor/fecha y al menos una partida con código. Sin ese filtro
+     aparecerían borradores inútiles (una fila vacía, sin folio que mostrar). */
+  const reabrible = a=>a && a.id!==A.id && !completa(a) && (a.folio||a.proveedor||a.fecha)
+    && String(a.paso||"").trim() && partidasSeguras(a).some(p=>p && (p.codigo||p.desc||p.fact));
+  let lista = window._list;
+  if(!Array.isArray(lista) || !lista.length){
+    try{ lista = await store.all(); }catch(err){ lista = window._list; }
+  }
+  const pendiente = (Array.isArray(lista)?lista:[]).filter(reabrible)
+    .sort((a,b)=>(a.actualizado||a.creado||0)-(b.actualizado||b.creado||0))[0] || null;
+  /* Se recuerda cuál se ofreció retomar: con varios folios pendientes, el diálogo
+     y el manejador del clic tienen que hablar del MISMO documento. */
+  window._folioPendiente = pendiente ? pendiente.id : null;
+  if(!avance && !pendiente) return false;
+  return elegirFolio(avance ? A.folio : "", pendiente, avance);
+}
+
+/* Pone en pantalla un documento ya guardado. Se usa desde el historial
+   (data-open) y desde el diálogo de "Empezar otro folio", para que el folio se
+   retome EXACTAMENTE donde quedó: antes siempre abría en el Paso 1 aunque el
+   documento estuviera capturado hasta el Paso 4. */
+function elegirAbierto(a){
+  if(!a){ msg="Esa auditoría ya no existe. Actualiza el historial."; return renderHist(); }
+  A = normalizar(JSON.parse(JSON.stringify(a)));
+  vista = "nueva";
+  const p = Math.min(6, Math.max(1, Math.trunc(num(A.paso))||1));
+  A.paso = p;
+  msg = p>1
+    ? `Folio ${A.folio||"sin folio"} reabierto: continúa en el Paso ${p}, donde lo dejaste.`
+    : `Folio ${A.folio||"sin folio"} reabierto.`;
+  return render();
 }
 
 /* Bloque de totales para ajustar inventario.
@@ -770,19 +950,33 @@ async function renderHist(){
     return;
   }
   list = (list||[]).sort((a,b)=>(b.fecha+b.creado).toString().localeCompare((a.fecha+a.creado).toString()));
+  /* Se separa lo que sigue EN CAPTURA de lo terminado: el trabajo a medias es lo
+     que hay que retomar, y antes se perdía entre los registros completos. */
+  const enCaptura = list.filter(a=>!completa(a));
+  const terminadas = list.filter(a=>completa(a));
+  const filasDe = arr=>arr.map(a=>{
+    /* Cada fila se pincha a sí misma: un documento antiguo con un campo
+       faltante solo afecta su propia fila, no toda la tabla. */
+    try{
+      const r=resumen([a]);
+      return `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}${completa(a)?"":`<span class="avance">En captura · Paso ${Math.min(6,Math.max(1,num(a.paso)||1))}</span>`}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"—"}</td><td class="row"><button class="btn ${completa(a)?"sec":""}" data-open="${esc(a.id)}">${completa(a)?"Abrir":"Reanudar"}</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
+    }catch(e){
+      return `<tr><td colspan="6">Registro con datos incompletos (id ${esc(a&&a.id)}). Ábrelo para corregirlo o elíminalo.</td></tr>`;
+    }
+  }).join("");
+  /* Etiqueta que da contexto al renglón: en la tabla plana anterior no se sabía
+     si un hallazgo "0" era un conteo o una auditoría sin terminar. */
+  const separador = t=>`<tr><td colspan="6" style="background:var(--acc2);font-weight:600;font-size:13px">${t}</td></tr>`;
+  const cuerpo = (enCaptura.length||terminadas.length)
+    ? (enCaptura.length?separador(`En captura — retómalas donde las dejaste (${enCaptura.length})`)+filasDe(enCaptura):"")
+      + (terminadas.length?separador(`Terminadas (${terminadas.length})`)+filasDe(terminadas):"")
+    : `<tr><td colspan="6">Aún no hay auditorías. Empieza una desde “Auditoría del día”.</td></tr>`;
   $("#app").innerHTML = `<div class="card"><h2>Historial y reportes</h2>
+    <p class="hint" style="margin-bottom:10px">Puedes trabajar en varios folios a la vez: deja uno a medias,
+    empieza el siguiente y vuelve después con <strong>Reanudar</strong>. Cada avance de paso se guarda solo.</p>
     <div class="row" style="margin:10px 0 14px"><label>Reporte del día<input type="date" id="dia" value="${hoy()}"></label><button class="btn" id="pdfDia">Descargar PDF del día</button></div>
     <div class="tw"><table><tr><th>Fecha</th><th>Línea</th><th>Folio</th><th>Proveedor</th><th class="n">Hallazgos</th><th></th></tr>
-    ${list.map(a=>{
-      /* Cada fila se pincha a sí misma: un documento antiguo con un campo
-         faltante solo afecta su propia fila, no toda la tabla. */
-      try{
-        const r=resumen([a]);
-        return `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"En captura"}</td><td class="row"><button class="btn sec" data-open="${esc(a.id)}">Abrir</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
-      }catch(e){
-        return `<tr><td colspan="6">Registro con datos incompletos (id ${esc(a&&a.id)}). Ábrelo para corregirlo o elíminalo.</td></tr>`;
-      }
-    }).join("")||`<tr><td colspan="6">Aún no hay auditorías. Empieza una desde “Auditoría del día”.</td></tr>`}
+    ${cuerpo}
     </table></div></div>${msg?`<div class="msg">${esc(msg)}</div>`:""}`;
   window._list = list; msg="";
 }
@@ -797,9 +991,50 @@ document.addEventListener("input",e=>{
   } else return;
   const s=$("#sig"); if(s) s.disabled=!PASOS[A.paso-1].ok(A);
 });
+
+/* Aviso de folio duplicado mientras se teclea (no en cada tecla: solo cuando el
+   campo pierde el foco). Aquí NO se consulta Firestore para no castigar la red
+   en un evento de formulario: se usa la lista que ya trajo el historial. Si el
+   usuario abrió el historial, la comprobación es exacta. */
+document.addEventListener("focusout", async e=>{
+  const t = e.target;
+  if(!t || t.dataset.f !== "folio") return;
+  if(!String(A.folio||"").trim()) return;
+  if(!Array.isArray(window._list) || !window._list.length) return;
+  const f = String(A.folio).trim().toLowerCase();
+  const previo = window._list.find(x=>x && x.id !== A.id && String(x.folio||"").trim().toLowerCase() === f);
+  if(!previo) return;
+  /* Se evita repetir el mismo aviso en cada salida del campo. */
+  if(window._folioAvisado === A.id + "|" + f) return;
+  window._folioAvisado = A.id + "|" + f;
+  msg = `El folio ${A.folio} ya está capturado (${previo.fecha} · ${previo.proveedor||"sin proveedor"}). Si es la misma factura, ábrela desde el historial en lugar de duplicarla.`;
+  render();
+});
 document.addEventListener("change", async e=>{
   const t = e.target;
+  /* Al salir del Paso 1 se guarda el folio SOLO: es el momento en que el usuario
+     ya tiene los datos de la factura y lo más probable es que continúe después.
+     Si esto se dejara al "Guardar y continuar", cerrar la pestaña aquí perdía el
+     folio entero. Solo aplica a la pantalla de captura (vista "nueva"): en el
+     historial el mismo id de campo aparece en los filtros del reporte, y no debe
+     dispararse un guardado desde ahí. */
+  if(t.dataset && t.dataset.go !== undefined && t.dataset.f && vista === "nueva"){
+    const k = +t.dataset.go;
+    if(k >= 1 && k <= 6 && puede(A,k) && A.paso !== k){
+      const anterior = A.paso;
+      A.paso = k;
+      /* `guardar()` no lanza: devuelve false cuando el documento todavía no cumple
+         el esquema. Aquí no se avisa nada: el aviso de "sin guardar" del Paso 1 ya
+         lo explica, y el usuario no pidió guardar todavía. */
+      if(!await guardar()) A.paso = anterior;
+    }
+    return;
+  }
   if(t.id !== "factura") return;
+  /* El mismo id de archivo existe en el Paso 1 y en el Paso 2: se ignora si el
+     control no está realmente en pantalla (restos de otra vista) para no mezclar
+     la extracción de partidas con la de cabecera. */
+  if(!t.isConnected) return;
   const archivo = t.files && t.files[0];
   if(!archivo) return;
   const caja = document.getElementById("facturaMsg");
@@ -809,17 +1044,32 @@ document.addEventListener("change", async e=>{
   try{
     /* El archivo se procesa en memoria; en ningún momento se sube a un servidor. */
     const res = await leerFactura(archivo);
-    /* Se emparejan los datos de cabecera del CFDI con el formulario. */
+    /* Se emparejan los datos de cabecera del CFDI con el formulario.
+       IMPORTANTE: además de asignarlos a `A`, hay que REFLEJARLOS en los campos
+       del Paso 1. Antes solo se cambiaba `A` y el usuario veía los inputs vacíos:
+       parecía que la lectura no había servido de nada hasta cambiar de paso. */
     const cab = res.cabecera || {};
     let aplicados = [];
     if(cab.folio && !A.folio){ A.folio = cab.folio; aplicados.push("folio"); }
     if(cab.proveedor && !A.proveedor){ A.proveedor = cab.proveedor; aplicados.push("proveedor"); }
     if(cab.fecha && (!A.fecha || A.fecha===hoy())){ A.fecha = cab.fecha; aplicados.push("fecha"); }
     pintarExtraccion(res, archivo.name);
+    /* El folio real de la factura no debe capturarse dos veces: si ya existe una
+       auditoría con ese folio, casi siempre es un duplicado (y un ajuste de
+       inventario aplicado dos veces). Se avisa aquí, al leer el archivo. */
+    if(aplicados.includes("folio")) await revisarFolioDuplicado();
+    pintarCabecera(aplicados);
+    /* Se informa DE DÓNDE salió cada dato: si el folio vino del UUID del timbre
+       (y no del número impreso en el papel) o si la fecha es la de emisión y no
+       la de recepción, el usuario debe verlo antes de seguir capturando. */
+    const detalles = [];
+    if(aplicados.includes("folio") && cab.folioOrigen) detalles.push(`el folio salió de «${cab.folioOrigen}»`);
+    if(aplicados.includes("fecha") && cab.fecha) detalles.push(`la fecha (${cab.fecha}) es la de emisión del CFDI: cámbiala si la mercancía llegó otro día`);
     if(aplicados.length){
       const c2 = document.getElementById("facturaMsg");
       if(c2) c2.insertAdjacentHTML("afterbegin",
-        `<div class="msg" style="background:var(--okbg);color:var(--ok)">También se tomaron del CFDI: ${aplicados.join(", ")}. Verifícalos en el Paso 1.</div>`);
+        `<div class="msg" style="background:var(--okbg);color:var(--ok)">También se tomaron del CFDI: ${aplicados.join(", ")}.
+        Verifícalos en el Paso 1${detalles.length?` — ${detalles.join("; ")}`:""}.</div>`);
     }
   }catch(err){
     if(caja) caja.innerHTML = `<div class="msg">No se pudo leer el archivo: ${esc(err.message||err)}</div>`;
@@ -854,15 +1104,67 @@ document.addEventListener("click",async e=>{
     }
     if(b.dataset.del){A.partidas.splice(+b.dataset.del,1);return render();}
     if(b.id==="sig"){
+      const anterior = A.paso;
       A.paso=Math.min(6,A.paso+1);
       /* Al avanzar de paso se intenta persistir el avance; si el documento aún no
          cumple el esquema (p. ej. paso 1 sin partidas capturadas) no es un error,
-         solo significa que todavía no hay nada que guardar. */
+         solo significa que todavía no hay nada que guardar.
+         Como el borrador ya SÍ se guarda, el avance de cada folio queda en
+         Firestore y se puede dejar a medias y retomar después. */
       const guardado = await guardar();
-      msg = guardado ? "" : "Avance de paso sin guardar todavía: completa fecha, línea, proveedor y las partidas de la factura.";
+      msg = guardado
+        ? `Avance guardado. Puedes empezar otro folio cuando quieras: este quedará en el historial como “En captura · Paso ${A.paso}”.`
+        : (anterior>=2
+            ? "No se guardó el avance: revisa que cada partida tenga código, descripción y cantidad facturada."
+            : "Avance sin guardar todavía: completa fecha, línea, proveedor y folio.");
       return render();
     }
-    if(b.id==="nuevo"){A=blank();return render();}
+    if(b.id==="nuevo"){A=blank();msg="";return render();}
+    /* Empezar otro folio sin perder el que está en pantalla. Los tres caminos
+       comparten el mismo guardado: el borrador se persiste con su propio id, así
+       que se pueden llevar varios folios a la vez. */
+    if(b.id==="nuevoFolio"){
+      const r = await otroFolio();
+      /* Sin avance que guardar y sin pendientes: no hay nada que decidir y se
+         responde con la misma acción del botón anterior ("Nueva auditoría"). */
+      if(r === false){ A=blank(); return render(); }
+      if(r === "cancelar") return;
+      if(r === "nuevo"){
+        if(hayAvance(A)){ const ok = await guardar(); if(!ok) return; }
+        A = blank();
+        msg = "Empezando en blanco. El folio anterior quedó guardado en el historial.";
+        return render();
+      }
+      if(r === "retomar"){
+        /* El folio actual sigue en pantalla y SIN guardar: no se pisa en silencio.
+           Si el guardado no procede (documento que las reglas rechazarían), se
+           pregunta antes de perder el avance. */
+        if(hayAvance(A)){
+          const ok = await guardar();
+          if(!ok && !confirm("El folio en pantalla no se puede guardar todavía (revisa fecha, línea, proveedor y folio).\n\nSi abres el folio pendiente, este avance se perderá.\n¿Continuar de todos modos?")) return;
+        }
+        if(window._folioPendiente){
+          const l = (window._list||[]).find(x=>x.id===window._folioPendiente) || null;
+          if(!l){ msg = "Ese folio ya no está disponible. Actualiza el historial."; return render(); }
+          return elegirAbierto(l);
+        }
+        /* Sin documento localizable, se abre el historial: ahí está el botón
+           *Reanudar* de cada folio en captura, con el paso donde quedó. */
+        msg = "Elige el folio que quieres retomar en el historial.";
+        vista = "hist";
+        return render();
+      }
+      /* Guardar y empezar otro: se avisa si el guardado no procede, en lugar de
+         abrir un folio en blanco como si el anterior estuviera a salvo. */
+      const ok = await guardar();
+      if(!ok){
+        msg = "No se guardó el folio: revisa fecha, línea, proveedor y folio.";
+        return render();
+      }
+      A = blank();
+      msg = "Folio guardado en el historial. Empieza el siguiente cuando quieras: el anterior sigue disponible.";
+      return render();
+    }
     if(b.id==="pdf"){
       /* Antes de generar el reporte se persiste; si el documento no cumple el
          esquema se avisa y no se produce un PDF incompleto que parezca válido. */
@@ -876,9 +1178,18 @@ document.addEventListener("click",async e=>{
          render fallaría. Se avisa en vez de dejar la pantalla en blanco. */
       const encontrado = (window._list||[]).find(x=>x.id===b.dataset.open);
       if(!encontrado){ msg="Esa auditoría ya no existe. Actualiza el historial."; return renderHist(); }
-      A = normalizar(JSON.parse(JSON.stringify(encontrado)));
-      vista="nueva";
-      return render();
+      /* Si ya había otro folio a medias en pantalla, se avisa antes de pisarlo:
+         el avance del folio actual ya está guardado (se persiste en cada paso),
+         pero conviene que el usuario lo sepa y pueda volver con "Reanudar". */
+      const enPantalla = vista==="nueva" && A && A.id !== encontrado.id && hayAvance(A);
+      if(enPantalla && !confirm(`Tienes otro folio abierto${A.folio?` (${A.folio})`:` (${A.proveedor||"sin folio"})`} sin terminar.\n\n¿Quieres guardar su avance antes de abrir ${encontrado.folio||"la auditoría seleccionada"}?\n\nAceptar = guardar el avance y abrir la otra.\nCancelar = abrir la otra sin guardar (el avance en pantalla se pierde).`)){
+        /* Cancelar ya NO significa "no hacer nada": antes el botón *Reanudar* no
+           hacía absolutamente nada si el usuario cancelaba, y parecía roto. */
+        msg = "No se abrió nada. El folio en pantalla sigue tal como lo tenías; si quieres conservarlo, pulsa Guardar y continuar.";
+        return render();
+      }
+      if(enPantalla) await guardar();
+      return elegirAbierto(encontrado);
     }
     if(b.dataset.pdf){
       const a=(window._list||[]).find(x=>x.id===b.dataset.pdf);
@@ -1006,8 +1317,32 @@ function extraerXML(texto){
 function leerCabeceraCFDI(doc){
   const g=(tag,attr)=>{const n=doc.getElementsByTagName(tag)[0];return n?(n.getAttribute(attr)||""):"";};
   const emisor = doc.getElementsByTagName("cfdi:Emisor")[0] || doc.getElementsByTagName("Emisor")[0];
+  /* El folio del CFDI es el identificador de la factura. El atributo estándar es
+     Folio, pero hay comprobantes que solo traen Serie (o nada en Folio y el dato
+     dentro del texto). Se intentan, en orden: Folio; Serie + Folio; Folie (error
+     frecuente de captura en emisores); y por último el Folio del Timbre Fiscal
+     Digital, que el SAT asigna y es único. Se conserva el UUID solo si no hubo
+     ninguna otra opción, porque es largo pero identifica la factura sin dudas. */
+  const folioSucio = limpia(g("cfdi:Comprobante","Folio"));
+  const serie      = limpia(g("cfdi:Comprobante","Serie"));
+  let folio = folioSucio, origenFolio = folioSucio ? "Comprobante/Folio" : "";
+  if(!folio && serie){ folio = `${serie} ${folioSucio}`.trim(); origenFolio = "Serie + Folio"; }
+  if(!folio){
+    const alterno = limpia(g("cfdi:Comprobante","Folie"));
+    if(alterno){ folio = alterno; origenFolio = "Comprobante/Folie (atributo no estándar)"; }
+  }
+  if(!folio){
+    const uuid = limpia(g("cfdi:TimbreFiscalDigital","UUID") || g("TimbreFiscalDigital","UUID"));
+    if(uuid){ folio = uuid; origenFolio = "UUID del timbre fiscal"; }
+  }
+  if(!folio && serie){ folio = serie; origenFolio = "Serie"; }
   return {
-    folio:  limpia(g("cfdi:Comprobante","Folio")).slice(0, 60),
+    /* El recorte replica el tope de contenidoValido() (folio 60): una cadena más
+       larga hacía que el guardado fallara con permission-denied. */
+    folio: folio.slice(0, 60),
+    /* Se informa de dónde salió el folio: si vino del UUID conviene que el
+       usuario lo sepa, porque no coincide con el número impreso en el papel. */
+    folioOrigen: folio ? origenFolio : "",
     fecha:  limpia(g("cfdi:Comprobante","Fecha").slice(0,10)),
     proveedor: limpia(emisor ? emisor.getAttribute("Nombre") : "").slice(0, 120)
   };
@@ -1080,6 +1415,51 @@ async function leerFactura(archivo){
   return extraerXML(await archivo.text());
 }
 
+
+/* Refleja en los campos del Paso 1 lo que se tomó de la factura.
+   Se hace por DOM porque render() aún no ha corrido: los inputs ya están en
+   pantalla con los valores viejos y el usuario debe VER que se llenaron. */
+function pintarCabecera(campos){
+  (campos||[]).forEach(k=>{
+    const el = document.querySelector(`[data-f="${k}"]`);
+    if(el) el.value = A[k];
+  });
+}
+
+/* ¿Ya hay otra auditoría guardada con ese folio? Se compara sin distinguir
+   mayúsculas ni espacios, y se ignora la auditoría abierta (comparando ids). */
+async function yaExisteFolio(folio){
+  const f = String(folio||"").trim().toLowerCase();
+  if(!f) return null;
+  /* window._list puede estar vacía si el usuario nunca abrió el historial: en
+     ese caso se consulta a Firestore. Si la lectura falla (red bloqueada), se
+     sigue sin avisar en lugar de impedir la captura. */
+  let lista = window._list;
+  if(!Array.isArray(lista) || !lista.length){
+    try{ lista = await store.all(); }catch(err){ return null; }
+  }
+  return (lista||[]).find(x=>x && x.id !== A.id
+    && String(x.folio||"").trim().toLowerCase() === f) || null;
+}
+
+/* Avisa si el folio de la factura ya fue capturado. Un folio es la identidad de
+   la factura: capturarlo dos veces duplica el conteo de ajuste de inventario.
+   Es un AVISO, no un bloqueo: una factura puede recibirse en dos parcialidades
+   legítimas y el criterio final es del encargado. */
+async function revisarFolioDuplicado(){
+  const caja = document.getElementById("facturaMsg");
+  if(!caja) return;
+  if(!String(A.folio||"").trim()) return;
+  const previo = await yaExisteFolio(A.folio);
+  if(!previo) return;
+  caja.insertAdjacentHTML("afterbegin",
+    `<div class="msg" style="background:var(--badbg);color:var(--bad)">
+      <strong>Atención: el folio ${esc(A.folio)} ya está capturado</strong>
+      (${esc(previo.fecha)} · ${esc(previo.proveedor||"sin proveedor")}${completa(previo)?"":" · en captura"}).
+      Si estás capturando la misma factura, ábrela desde el historial en lugar de duplicarla:
+      el conteo de ajuste de inventario se contaría dos veces.
+    </div>`);
+}
 
 /* Pinta la vista previa: el usuario decide qué se queda antes de guardar nada. */
 let facturaPendiente = null;
