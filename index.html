@@ -503,33 +503,37 @@ const num = v=>(v===""||v==null)?null:Number(v);
 const uid = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
 const esc = s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const hoy = ()=>{const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)};
-const linea0 = ()=>({codigo:"",desc:"",fact:"",recib:"",real:"",sicar:""});
+const linea0 = ()=>({codigo:"",desc:"",fact:"",recib:"",real:""});
 const blank = ()=>({id:uid(),fecha:hoy(),linea:"",proveedor:"",folio:"",encargado:"",verificador:"",partidas:[linea0()],paso:1,creado:Date.now()});
 const dR = p=>num(p.recib)-num(p.fact);
-const dS = p=>num(p.real)-num(p.sicar);
 const fmt = n=>n>0?"+"+n:String(n);
 const cls = n=>n<0?"neg":n>0?"pos":"z";
+/* Paso 5 (Existencia en SICAR) y su comparación "Dif. sistema" se eliminaron a
+   propósito: el conteo en anaquel (Paso 4) es la última cantidad que se captura
+   y la única que se compara contra lo facturado/recibido. No se conserva ningún
+   campo `sicar` ni el delta real-SICAR, ni en pantalla, ni en el resumen, ni en
+   el PDF. Un documento que venga de una versión anterior con "sicar":paso 5 se
+   degrada solo (ver normalizar()). */
 function resultado(p){
-  const r=dR(p), s=dS(p), t=[];
+  const r=dR(p), t=[];
   if(r<0)t.push("Faltante en recepción"); if(r>0)t.push("Sobrante en recepción");
-  if(s<0)t.push("SICAR mayor que lo real"); if(s>0)t.push("SICAR menor que lo real");
   return t.length?t.join(" / "):"Conforme";
 }
-/* Una auditoría está completa solo si tiene partidas y todas traen recibido,
-   real y SICAR capturados. Se protege contra documentos viejos sin "partidas":
+/* Una auditoría está completa solo si tiene partidas y todas traen recibido y
+   real capturados. Se protege contra documentos viejos sin "partidas":
    sin esta guarda, resumen() y el historial fallaban y la tabla salía vacía
    aunque sí hubiera registros guardados. */
 const completa = a=>Array.isArray(a&&a.partidas)&&a.partidas.length>0&&
-  a.partidas.every(p=>p&&p.recib!==""&&p.real!==""&&p.sicar!=="");
+  a.partidas.every(p=>p&&p.recib!==""&&p.real!=="");
 function resumen(list){
-  let part=0,hall=0,falt=0,sobr=0,neto=0,recib=0,real=0,fact=0;
+  let part=0,hall=0,falt=0,sobr=0,recib=0,real=0,fact=0;
   /* Se comprueba cada nivel: un documento antiguo sin "partidas" (o con una
      partida nula) hacía fallar esta función, y con ella el historial y el PDF. */
   (Array.isArray(list)?list:[]).forEach(a=>{
     (Array.isArray(a&&a.partidas)?a.partidas:[]).forEach(p=>{
-      if(!p||p.recib===""||p.real===""||p.sicar==="")return;
+      if(!p||p.recib===""||p.real==="")return;
       part++; if(resultado(p)!=="Conforme")hall++;
-      const r=dR(p); if(r<0)falt+=-r; if(r>0)sobr+=r; neto+=dS(p);
+      const r=dR(p); if(r<0)falt+=-r; if(r>0)sobr+=r;
       fact+=num(p.fact)||0; recib+=num(p.recib)||0; real+=num(p.real)||0;
     });
   });
@@ -538,21 +542,23 @@ function resumen(list){
      factura y la suma no debe usarse para mover existencias. */
   const recepcionConforme = (falt===0 && sobr===0);
   const totalAjuste = recib + real;
-  return {aud:list.length,part,hall,falt,sobr,neto,fact,recib,real,recepcionConforme,totalAjuste};
+  return {aud:list.length,part,hall,falt,sobr,fact,recib,real,recepcionConforme,totalAjuste};
 }
 
 /* ===== Pasos, en el orden obligatorio de captura ===== */
-/* Se usa una versión segura de las partidas: un documento abierto desde el
-   historial puede no traerlas y estos predicados rompían la pantalla. */
+/* Son CINCO pasos: el antiguo Paso 5 ("Existencia en SICAR") se eliminó, así que
+   "Hallazgos y reporte" pasó de 6 a 5. Se usa una versión segura de las partidas:
+   un documento abierto desde el historial puede no traerlas y estos predicados
+   rompían la pantalla. */
 const partidasSeguras = a=>Array.isArray(a&&a.partidas)?a.partidas:[];
 const PASOS = [
   {t:"Datos de la factura", ok:a=>!!(a.fecha&&a.linea&&String(a.proveedor||"").trim()&&String(a.folio||"").trim()&&String(a.encargado||"").trim())},
   {t:"Partidas facturadas", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&String(p.codigo||"").trim()&&String(p.desc||"").trim()&&num(p.fact)>0)}},
   {t:"Recepción física", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&p.recib!=="")}},
   {t:"Conteo en anaquel", ok:a=>{const ps=partidasSeguras(a);return !!String(a.verificador||"").trim()&&ps.length>0&&ps.every(p=>p&&p.real!=="")}},
-  {t:"Existencia en SICAR", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&p.sicar!=="")}},
   {t:"Hallazgos y reporte", ok:()=>true}
 ];
+const ULTIMO = PASOS.length; /* 5: se usa en las guardas de paso en lugar de un 6 fijo */
 const puede = (a,n)=>PASOS.slice(0,n-1).every(p=>p.ok(a));
 
 let A = blank(), vista = "nueva", msg = "";
@@ -590,7 +596,10 @@ function normalizar(a){
   a.proveedor = txt(a.proveedor, 120);
   a.encargado = txt(a.encargado, 120);
   a.verificador = txt(a.verificador, 120);
-  a.paso = Math.min(6, Math.max(1, Math.trunc(num(a.paso) || 1)));
+  /* El tope sale de PASOS.length (5) en lugar de un 6 escrito a mano: si se
+     hubiera dejado el 6, un documento antiguo en el Paso 6 quedaría apuntando a
+     un paso que ya no existe y la pantalla saldría en blanco. */
+  a.paso = Math.min(ULTIMO, Math.max(1, Math.trunc(num(a.paso) || 1)));
   a.creado = Math.trunc(num(a.creado)) > 0 ? Math.trunc(num(a.creado)) : Date.now();
   /* Las reglas aceptan como máximo 20 partidas. Si un documento antiguo trajera
      más (o se abriera desde un JSON manipulado), slice(0,20) descartaría filas
@@ -598,17 +607,19 @@ function normalizar(a){
      perder datos a escondidas. */
   const filas = Array.isArray(a.partidas) && a.partidas.length ? a.partidas : [linea0()];
   if(filas.length > 20) avisoLimite = true;
-  /* Se escriben SIEMPRE los seis campos del esquema, aunque el origen los traiga
+  /* Se escriben SIEMPRE los cinco campos del esquema, aunque el origen los traiga
      incompletos. partidaValida() de firestore.rules usa hasOnly() y comprueba
-     `is string` en fact/recib/real/sicar: un `undefined` (campo ausente) o un
-     número hacían fallar el guardado COMPLETO con permission-denied. */
+     `is string` en fact/recib/real: un `undefined` (campo ausente) o un
+     número hacían fallar el guardado COMPLETO con permission-denied.
+     El antiguo campo `sicar` NO se escribe: hasOnly() lo rechazaría justamente
+     por sobrar, así que un documento viejo que lo traiga lo pierde aquí (a
+     propósito: el dato ya no se usa en ninguna parte de la app). */
   a.partidas = filas.slice(0, 20).map(p=>({
     codigo: txt(p && p.codigo, TOPE_CODIGO),
     desc:   txt(p && p.desc, TOPE_DESC),
     fact:   cantidad(p && p.fact),
     recib:  cantidad(p && p.recib),
     real:   cantidad(p && p.real),
-    sicar:  cantidad(p && p.sicar),
   }));
   return a;
 }
@@ -640,7 +651,7 @@ function guardable(a){
    que guardable() da false y el Paso 1 nunca se persistía. Consecuencia real:
    el folio NO aparecía en el historial y era imposible retomarlo más tarde.
    El único requisito que las reglas imponen de verdad para el borrador es que
-   `codigo` (uno de los seis campos, con hasOnly) esté PRESENTE aunque vaya
+   `codigo` (uno de los cinco campos, con hasOnly) esté PRESENTE aunque vaya
    vacío: parte de `^[\\s\\S]{1,60}$` a `{0,60}` justo para permitir la fila
    recién creada (ver partidaValida() en firestore.rules). */
 function guardableBorrador(a){
@@ -649,12 +660,11 @@ function guardableBorrador(a){
   return ps.every(p=>p
     && String(p.codigo??"").length <= TOPE_CODIGO
     && String(p.desc??"").length   <= TOPE_DESC
-    /* Las tres cantidades NO pueden quedar en notación larga: las reglas
+    /* Las dos cantidades NO pueden quedar en notación larga: las reglas
        aceptan máximo 12 caracteres y el documento completo se rechazaría. */
     && String(p.fact??"").length  <= 12
     && String(p.recib??"").length <= 12
-    && String(p.real??"").length  <= 12
-    && String(p.sicar??"").length <= 12);
+    && String(p.real??"").length  <= 12);
 }
 
 async function guardar(){
@@ -764,10 +774,8 @@ function paso(n){
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Existencia real</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="real" value="${esc(p.real)}"></td></tr>`)}
     </table></div>${navTodos(botonOtroFolio())}`;
-  if(n===5) return `<h2>Existencia en SICAR</h2><p class="hint">Con la entrada de la factura ya registrada en SICAR, captura la existencia que muestra el sistema para cada código.</p>
-    <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Existencia SICAR</th></tr>
-    ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="sicar" value="${esc(p.sicar)}"></td></tr>`)}
-    </table></div>${navTodos(botonOtroFolio())}`;
+  /* n===5 es AHORA la pantalla de hallazgos: el antiguo paso de captura de SICAR
+     desapareció, así que no hay ningún bloque intermedio que devolver aquí. */
   const r=resumen([A]);
   return `<h2>Hallazgos de la auditoría</h2><p class="hint">Folio ${esc(A.folio)} · ${esc(A.proveedor)} · ${esc(A.linea)} · ${esc(A.fecha)}</p>
     <div class="kpis">
@@ -775,13 +783,12 @@ function paso(n){
       <div class="kpi ${r.hall?"bad":"ok"}"><span>Con hallazgo</span><strong>${r.hall}</strong></div>
       <div class="kpi ${r.falt?"bad":"ok"}"><span>Piezas faltantes en recepción</span><strong>${r.falt}</strong></div>
       <div class="kpi"><span>Piezas sobrantes</span><strong>${r.sobr}</strong></div>
-      <div class="kpi ${r.neto?"bad":"ok"}"><span>Diferencia real vs SICAR</span><strong>${fmt(r.neto)}</strong></div>
     </div>
     ${bloqueAjuste(r)}
-    <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Facturada</th><th class="n">Recibida</th><th class="n">Real</th><th class="n">SICAR</th><th>Resultado</th></tr>
-    ${filas(p=>`<tr class="${resultado(p)==="Conforme"?"":"hall"}"><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${p.fact}</td><td class="n">${p.recib}</td><td class="n">${p.real}</td><td class="n">${p.sicar}</td><td>${resultado(p)}</td></tr>`)}
+    <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Facturada</th><th class="n">Recibida</th><th class="n">Real</th><th>Resultado</th></tr>
+    ${filas(p=>`<tr class="${resultado(p)==="Conforme"?"":"hall"}"><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${p.fact}</td><td class="n">${p.recib}</td><td class="n">${p.real}</td><td>${resultado(p)}</td></tr>`)}
     </table></div>
-    <div class="bar"><button class="btn sec" data-go="5">Anterior</button><span class="row">${botonOtroFolio()}<button class="btn" id="pdf">Descargar PDF</button></span></div>`;
+    <div class="bar"><button class="btn sec" data-go="4">Anterior</button><span class="row">${botonOtroFolio()}<button class="btn" id="pdf">Descargar PDF</button></span></div>`;
 }
 
 /* ¿Vale la pena guardar lo que hay en pantalla? Misma condición que usa el botón
@@ -794,7 +801,7 @@ function hayAvance(a){
   if(!a) return false;
   if(String(a.folio||"").trim() || String(a.proveedor||"").trim() || String(a.encargado||"").trim()
      || String(a.verificador||"").trim() || String(a.linea||"").trim()) return true;
-  return partidasSeguras(a).some(p=>p && (p.codigo||p.desc||p.fact||p.recib||p.real||p.sicar));
+  return partidasSeguras(a).some(p=>p && (p.codigo||p.desc||p.fact||p.recib||p.real));
 }
 
 /* Aviso que evita el fallo silencioso más probable de la captura: escribir el
@@ -818,7 +825,10 @@ function avisoSinGuardar(){
 function huella(a){
   return [a && a.folio, a && a.fecha, a && a.linea, a && a.proveedor,
           a && a.encargado, a && a.verificador, a && a.paso,
-          partidasSeguras(a).map(p=>[p&&p.codigo,p&&p.desc,p&&p.fact,p&&p.recib,p&&p.real,p&&p.sicar].join("\u0001")).join("\u0002")
+          /* Se incluyen los cinco campos de la partida (ya sin `sicar`): si se
+             dejara fuera alguno, capturarlo no cambiaría la huella y el aviso de
+             "sin guardar" no aparecería (y el usuario perdería el dato al salir). */
+          partidasSeguras(a).map(p=>[p&&p.codigo,p&&p.desc,p&&p.fact,p&&p.recib,p&&p.real].join("\u0001")).join("\u0002")
          ].join("\u0000");
 }
 
@@ -906,7 +916,7 @@ function elegirAbierto(a){
   if(!a){ msg="Esa auditoría ya no existe. Actualiza el historial."; return renderHist(); }
   A = normalizar(JSON.parse(JSON.stringify(a)));
   vista = "nueva";
-  const p = Math.min(6, Math.max(1, Math.trunc(num(A.paso))||1));
+  const p = Math.min(ULTIMO, Math.max(1, Math.trunc(num(A.paso))||1));
   A.paso = p;
   msg = p>1
     ? `Folio ${A.folio||"sin folio"} reabierto: continúa en el Paso ${p}, donde lo dejaste.`
@@ -924,7 +934,6 @@ function bloqueAjuste(r){
       <tr><td>Total recibido</td><td class="n">${r.recib}</td></tr>
       <tr><td>Total real en anaquel</td><td class="n">${r.real}</td></tr>
       <tr><td><strong>Recibido + Real (conteo total)</strong></td><td class="n"><strong>${r.totalAjuste}</strong></td></tr>
-      <tr><td>Diferencia real vs SICAR</td><td class="n">${fmt(r.neto)}</td></tr>
     </table></div>`;
   if(r.recepcionConforme){
     return `<div class="card" style="border-left:4px solid #2a7a4b">
@@ -938,7 +947,7 @@ function bloqueAjuste(r){
       </div>
       ${filasTot}
       <p class="hint">Ajuste sugerido: fijar la existencia en <strong>${r.totalAjuste}</strong> piezas
-      (real + recibido). Si SICAR muestra otra cifra, la diferencia a mover es <strong>${fmt(r.neto)}</strong>.</p>
+      (real + recibido).</p>
     </div>`;
   }
   return `<div class="card" style="border-left:4px solid #b3391b">
@@ -978,7 +987,7 @@ async function renderHist(){
        faltante solo afecta su propia fila, no toda la tabla. */
     try{
       const r=resumen([a]);
-      return `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}${completa(a)?"":`<span class="avance">En captura · Paso ${Math.min(6,Math.max(1,num(a.paso)||1))}</span>`}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"—"}</td><td class="row"><button class="btn ${completa(a)?"sec":""}" data-open="${esc(a.id)}">${completa(a)?"Abrir":"Reanudar"}</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
+      return `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}${completa(a)?"":`<span class="avance">En captura · Paso ${Math.min(ULTIMO,Math.max(1,num(a.paso)||1))}</span>`}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"—"}</td><td class="row"><button class="btn ${completa(a)?"sec":""}" data-open="${esc(a.id)}">${completa(a)?"Abrir":"Reanudar"}</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
     }catch(e){
       return `<tr><td colspan="6">Registro con datos incompletos (id ${esc(a&&a.id)}). Ábrelo para corregirlo o elíminalo.</td></tr>`;
     }
@@ -1040,7 +1049,9 @@ document.addEventListener("change", async e=>{
      dispararse un guardado desde ahí. */
   if(t.dataset && t.dataset.go !== undefined && t.dataset.f && vista === "nueva"){
     const k = +t.dataset.go;
-    if(k >= 1 && k <= 6 && puede(A,k) && A.paso !== k){
+    /* El tope sale del número de pasos (5) y no de un 6 fijo: con el 6 se seguiría
+       aceptando un salto a un paso que ya no existe. */
+    if(k >= 1 && k <= ULTIMO && puede(A,k) && A.paso !== k){
       const anterior = A.paso;
       A.paso = k;
       /* `guardar()` no lanza: devuelve false cuando el documento todavía no cumple
@@ -1147,7 +1158,7 @@ document.addEventListener("click",async e=>{
     if(b.dataset.del){A.partidas.splice(+b.dataset.del,1);return render();}
     if(b.id==="sig"){
       const anterior = A.paso;
-      A.paso=Math.min(6,A.paso+1);
+      A.paso=Math.min(ULTIMO,A.paso+1);
       /* Al avanzar de paso se intenta persistir el avance; si el documento aún no
          cumple el esquema (p. ej. paso 1 sin partidas capturadas) no es un error,
          solo significa que todavía no hay nada que guardar.
@@ -1244,7 +1255,7 @@ document.addEventListener("click",async e=>{
     if(b.dataset.pdf){
       const a=(window._list||[]).find(x=>x.id===b.dataset.pdf);
       if(!a){ msg="Esa auditoría ya no existe. Actualiza el historial."; return renderHist(); }
-      if(!completa(a)){ msg="Esa auditoría aún está en captura. Complétala (pasos 1 a 6) para generar su PDF."; return renderHist(); }
+      if(!completa(a)){ msg="Esa auditoría aún está en captura. Complétala (pasos 1 a 5) para generar su PDF."; return renderHist(); }
       return crearPDF([a],`Folio ${a.folio} · ${a.proveedor}`);
     }
     if(b.dataset.rm){if(confirm("¿Eliminar esta auditoría? No se puede deshacer.")){await store.remove(b.dataset.rm);}return renderHist();}
@@ -1261,7 +1272,7 @@ document.addEventListener("click",async e=>{
       if(!l.length){
         const enFecha = todos.filter(a=>a.fecha===d).length;
         msg = enFecha
-          ? `Hay ${enFecha} auditoría(s) del ${d} pero ninguna está completa (pasos 1 a 6). Termínalas para incluirlas en el reporte.`
+          ? `Hay ${enFecha} auditoría(s) del ${d} pero ninguna está completa (pasos 1 a 5). Termínalas para incluirlas en el reporte.`
           : `No hay auditorías con fecha ${d}.`;
         return renderHist();
       }
@@ -1276,7 +1287,7 @@ document.addEventListener("click",async e=>{
    File se descarta. A Firestore solo viajan las partidas confirmadas. */
 
 /* Normaliza una cantidad y la devuelve como TEXTO.
-   Devuelve string porque las reglas de Firestore exigen que fact/recib/real/sicar
+   Devuelve string porque las reglas de Firestore exigen que fact/recib/real
    sean siempre texto (firestore.rules: `p.fact is string`). Si aquí saliera un
    número, el documento entero sería rechazado con permission-denied. */
 function aNumero(v){
@@ -1327,10 +1338,11 @@ function extraerXML(texto){
   if(!nodos.length) throw new Error("No se encontraron conceptos en el XML. ¿Es una factura CFDI?");
   const crudo = nodos.map(n=>{
     const g=k=>n.getAttribute(k) || n.getAttribute(k.toLowerCase()) || "";
-    /* Se devuelven los SEIS campos que exige partidaValida() de firestore.rules.
-       Antes faltaban recib/real/sicar: la partida quedaba incompleta y las reglas
-       rechazaban el documento ENTERO con permission-denied si por cualquier ruta
-       no pasaba por aplicarExtraccion() (que era quien los agregaba después). */
+    /* Se devuelven los CINCO campos que exige partidaValida() de firestore.rules.
+       Antes faltaban recib/real (y sobraba sicar): la partida quedaba incompleta y
+       las reglas rechazaban el documento ENTERO con permission-denied si por
+       cualquier ruta no pasaba por aplicarExtraccion() (que era quien los agregaba
+       después). */
     return {
       /* Los topes replican `p.codigo.size() <= 60` y `p.desc.size() <= 300`
          de partidaValida(): una descripción larga del CFDI hacía fallar el
@@ -1343,10 +1355,9 @@ function extraerXML(texto){
       desc:   limpia(g("Descripcion") || n.textContent).slice(0, TOPE_DESC),
       /* Se entrega TEXTO: las reglas exigen `p.fact is string`. */
       fact:   cantidadTexto(g("Cantidad")),
-      /* Lo facturado llega con la cantidad; lo recibido se captura en el Paso 2. */
+      /* Lo facturado llega con la cantidad; lo recibido se captura en el Paso 3. */
       recib:  "",
-      real:   "",
-      sicar:  ""
+      real:   ""
     };
   }).filter(p=>p.codigo || p.desc);
   /* Aviso: una partida SIN código no se puede guardar. partidaValida() exige
@@ -1439,16 +1450,15 @@ function partidasDesdeLineas(lineas){
     const codigo = limpia(m[1]), desc = limpia(m[2]);
     /* Descarta renglones que en realidad son totales o claves fiscales. */
     if(!codigo || /^\d{6,}$/.test(codigo)) return;
-    /* Se entregan los SEIS campos del esquema (ver partidaValida() en
-       firestore.rules): recib/real/sicar vacíos, para que la partida esté
+    /* Se entregan los CINCO campos del esquema (ver partidaValida() en
+       firestore.rules): recib/real vacíos, para que la partida esté
        completa aunque no pase por aplicarExtraccion(). */
     out.push({
       codigo: codigo.slice(0, TOPE_CODIGO),
       desc:   desc.slice(0, TOPE_DESC),
       fact:   cant,
       recib:  "",
-      real:   "",
-      sicar:  ""
+      real:   ""
     });
   });
   return out;
@@ -1573,10 +1583,11 @@ function aplicarExtraccion(){
        respaldo ClaveProdServ, así que solo se descarta si el usuario borró el
        campo a mano o la cantidad quedó en cero. */
     .filter(x=>x.codigo && aNumero(x.fact)>0)
-    /* Se completan los SEIS campos del esquema aquí y también en extraerXML():
+    /* Se completan los CINCO campos del esquema aquí y también en extraerXML():
        partidaValida() de firestore.rules exige que existan TODOS, aunque vayan
-       vacíos. Si faltara uno solo, Firestore rechaza el documento completo. */
-    .map(x=>({codigo:x.codigo, desc:x.desc, fact:x.fact, recib:"", real:"", sicar:""}));
+       vacíos. Si faltara uno solo, Firestore rechaza el documento completo.
+       `sicar` ya NO se agrega: hasOnly() lo rechazaría por sobrar. */
+    .map(x=>({codigo:x.codigo, desc:x.desc, fact:x.fact, recib:"", real:""}));
   if(!nuevas.length) return 0;
   /* Se respeta el tope de 20 partidas que exigen las reglas de Firestore. */
   const libres = 20 - A.partidas.length;
@@ -1609,7 +1620,7 @@ function crearPDF(list,titulo){
   /* Solo se reportan auditorías con captura completa: un documento a medias
      produciría un PDF con cifras engañosas. */
   const utiles = (list||[]).filter(a=>a && completa(a));
-  if(!utiles.length) throw new Error("No hay auditorías completas que reportar. Termina la captura (pasos 1 a 6) antes de generar el PDF.");
+  if(!utiles.length) throw new Error("No hay auditorías completas que reportar. Termina la captura (pasos 1 a 5) antes de generar el PDF.");
   list = utiles;
   const {jsPDF}=window.jspdf, d=new jsPDF({unit:"pt",format:"letter"});
   const W=d.internal.pageSize.getWidth(), H=d.internal.pageSize.getHeight(), M=40;
@@ -1622,21 +1633,23 @@ function crearPDF(list,titulo){
   const r=resumen(list); let y=96;
   d.setFont("helvetica","bold"); d.setFontSize(12); d.text("Resumen general",M,y); y+=8;
   d.autoTable({startY:y,margin:{left:M,right:M},theme:"grid",styles:{fontSize:9,cellPadding:5},headStyles:{fillColor:[31,92,122]},
-    head:[["Auditorías","Partidas","Con hallazgo","Faltantes en recepción","Sobrantes en recepción","Real vs SICAR (neto)"]],
-    body:[[r.aud,r.part,r.hall,r.falt,r.sobr,fmt(r.neto)]]});
+    head:[["Auditorías","Partidas","Con hallazgo","Faltantes en recepción","Sobrantes en recepción"]],
+    body:[[r.aud,r.part,r.hall,r.falt,r.sobr]]});
   y=d.lastAutoTable.finalY+24;
   /* Conteo total para ajuste de inventario: solo se marca utilizable si
      Dif. recep. no tiene diferencias en ninguna partida del reporte. */
   d.setFont("helvetica","bold"); d.setFontSize(12); d.text("Conteo total para ajuste de inventario",M,y); y+=8;
   d.autoTable({startY:y,margin:{left:M,right:M},theme:"grid",styles:{fontSize:9,cellPadding:5},
     headStyles:{fillColor:r.recepcionConforme?[42,122,75]:[179,57,27]},
-    head:[["Total facturado","Total recibido","Total real en anaquel","Recibido + Real","Dif. real vs SICAR","¿Apto para ajuste?"]],
-    body:[[r.fact,r.recib,r.real,r.totalAjuste,fmt(r.neto),r.recepcionConforme?"Sí (Dif. recep. = 0)":"No (Dif. recep. != 0)"]],
-    columnStyles:{0:{halign:"right"},1:{halign:"right"},2:{halign:"right"},3:{halign:"right"},4:{halign:"right"}}});
+    head:[["Total facturado","Total recibido","Total real en anaquel","Recibido + Real","¿Apto para ajuste?"]],
+    body:[[r.fact,r.recib,r.real,r.totalAjuste,r.recepcionConforme?"Sí (Dif. recep. = 0)":"No (Dif. recep. != 0)"]],
+    columnStyles:{0:{halign:"right"},1:{halign:"right"},2:{halign:"right"},3:{halign:"right"}}});
   y=d.lastAutoTable.finalY+10;
   d.setFont("helvetica","italic"); d.setFontSize(8);
+  /* La sugerencia de ajuste ya NO cita la diferencia contra SICAR: ese paso se
+     eliminó y el conteo total (recibido + real) es la única cifra del reporte. */
   if(r.recepcionConforme){
-    d.text(`Ajuste sugerido: fijar la existencia en ${r.totalAjuste} piezas (real + recibido). Diferencia a mover vs SICAR: ${fmt(r.neto)}.`,M,y+8);
+    d.text(`Ajuste sugerido: fijar la existencia en ${r.totalAjuste} piezas (real + recibido).`,M,y+8);
   }else{
     d.text(`No usar para ajuste: hay diferencias de recepción (faltantes: ${r.falt}, sobrantes: ${r.sobr}). Aclare la recepción primero.`,M,y+8);
   }
@@ -1648,10 +1661,10 @@ function crearPDF(list,titulo){
     d.setFont("helvetica","normal"); d.setFontSize(9);
     d.text(`Recibió: ${a.encargado}    Verificó: ${a.verificador}`,M,y+13);
     d.autoTable({startY:y+20,margin:{left:M,right:M},theme:"grid",styles:{fontSize:8,cellPadding:4},headStyles:{fillColor:[31,92,122]},
-      head:[["Código","Descripción","Fact.","Recib.","Dif. recep.","Real","SICAR","Dif. sistema","Resultado"]],
-      body:a.partidas.map(p=>[p.codigo,p.desc,p.fact,p.recib,fmt(dR(p)),p.real,p.sicar,fmt(dS(p)),resultado(p)]),
-      columnStyles:{2:{halign:"right"},3:{halign:"right"},4:{halign:"right"},5:{halign:"right"},6:{halign:"right"},7:{halign:"right"}},
-      didParseCell:h=>{ if(h.section==="body"&&h.row.raw[8]!=="Conforme"){h.cell.styles.fillColor=[251,234,229];} }});
+      head:[["Código","Descripción","Fact.","Recib.","Dif. recep.","Real","Resultado"]],
+      body:a.partidas.map(p=>[p.codigo,p.desc,p.fact,p.recib,fmt(dR(p)),p.real,resultado(p)]),
+      columnStyles:{2:{halign:"right"},3:{halign:"right"},4:{halign:"right"},5:{halign:"right"}},
+      didParseCell:h=>{ if(h.section==="body"&&h.row.raw[6]!=="Conforme"){h.cell.styles.fillColor=[251,234,229];} }});
     y=d.lastAutoTable.finalY+10;
     /* Conteo por folio, con la misma regla: usar la suma solo si Dif. recep. = 0.
        Se divide en dos líneas porque el aviso supera el ancho útil de la página. */

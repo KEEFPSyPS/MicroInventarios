@@ -116,6 +116,44 @@ de `auditorias` con `correoVerificado()`).
 | Longitud de `desc` | 300 | Igual |
 | Longitud de cantidades | 12 | Igual |
 | Longitud de nombres | 120 | Igual |
+| Paso de la captura | 1 a 5 | La auditoría tiene cinco pasos |
+
+### Esquema vigente: cinco pasos, sin paso de SICAR
+
+El paso **«Existencia en SICAR»** se eliminó por completo, junto con su columna
+**«Dif. sistema»** del PDF. La captura queda así:
+
+| Paso | Nombre | Captura |
+|---|---|---|
+| 1 | Datos de la factura | Fecha, línea, proveedor, folio, encargado |
+| 2 | Partidas facturadas | Código, descripción y cantidad facturada |
+| 3 | Recepción física | Cantidad recibida (y su diferencia contra la factura) |
+| 4 | Conteo en anaquel | Verificador y existencia real contada |
+| 5 | Hallazgos y reporte | Resumen, conteo para ajuste y descarga del PDF |
+
+Cada partida se guarda con **cinco campos**: `codigo`, `desc`, `fact`, `recib`,
+`real`. Las reglas usan `hasOnly()`, así que un documento guardado con la versión
+anterior (con `sicar` y `paso: 6`) **no se puede volver a guardar tal cual**: la
+app lo normaliza al abrirlo (descarta `sicar` y baja el paso a 5), por lo que
+basta reabrirlo y guardarlo una vez.
+
+**Importante:** este cambio también exige volver a desplegar las reglas
+(`firebase deploy --only firestore:rules`); si no, la escritura fallará con
+`permission-denied` porque la regla publicada todavía exigiría `sicar`.
+
+## Prueba automatizada del flujo
+
+`verificar-pasos.cjs` ejecuta el script real de `index.html` dentro de un DOM
+mínimo (sin navegador) y comprueba el rediseño de cinco pasos:
+
+```bash
+node verificar-pasos.cjs
+```
+
+Cubre: número y títulos de los pasos, captura completa sin `sicar`, llegada al
+Paso 5 por clics reales, contenido de `resumen()`/`resultado()`, persistencia del
+documento normalizado, degradación de documentos antiguos (paso 6 con `sicar`),
+botón «Empezar otro folio» y el PDF sin columnas SICAR / «Dif. sistema».
 
 ## Lectura vs escritura
 
