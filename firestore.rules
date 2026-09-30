@@ -63,7 +63,7 @@ service cloud.firestore {
        Paso 1 con la fila en blanco.
        Límite de evaluación: Firestore corta cada petición a ~1,000 expresiones.
        Con matches() se valida tipo y longitud en UNA sola expresión por campo,
-       para que quepan las 20 partidas de una factura importada.
+       para que quepan las 40 partidas de una factura importada.
        [\\s\\S] cuenta también saltos de línea. */
     function partidaValida(p) {
       return p.keys().hasOnly(['codigo','desc','fact','recib','real'])

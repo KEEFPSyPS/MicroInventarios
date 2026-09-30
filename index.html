@@ -563,6 +563,9 @@ const puede = (a,n)=>PASOS.slice(0,n-1).every(p=>p.ok(a));
 
 let A = blank(), vista = "nueva", msg = "";
 /* Se activa si al normalizar hubo que recortar partidas sobrantes (>20). */
+/* Tope de partidas por auditoría. DEBE coincidir con el tope de partidasValidas()
+   en firestore.rules (mismo número de posiciones indexadas). */
+const MAX_PARTIDAS = 40;
 let avisoLimite = false;
 
 /* Ajusta el documento al esquema que exigen las reglas de Firestore.
@@ -606,7 +609,7 @@ function normalizar(a){
      EN SILENCIO: el usuario creería haber guardado todo. Se avisa en lugar de
      perder datos a escondidas. */
   const filas = Array.isArray(a.partidas) && a.partidas.length ? a.partidas : [linea0()];
-  if(filas.length > 20) avisoLimite = true;
+  if(filas.length > MAX_PARTIDAS) avisoLimite = true;
   /* Se escriben SIEMPRE los cinco campos del esquema, aunque el origen los traiga
      incompletos. partidaValida() de firestore.rules usa hasOnly() y comprueba
      `is string` en fact/recib/real: un `undefined` (campo ausente) o un
@@ -614,7 +617,7 @@ function normalizar(a){
      El antiguo campo `sicar` NO se escribe: hasOnly() lo rechazaría justamente
      por sobrar, así que un documento viejo que lo traiga lo pierde aquí (a
      propósito: el dato ya no se usa en ninguna parte de la app). */
-  a.partidas = filas.slice(0, 20).map(p=>({
+  a.partidas = filas.slice(0, MAX_PARTIDAS).map(p=>({
     codigo: txt(p && p.codigo, TOPE_CODIGO),
     desc:   txt(p && p.desc, TOPE_DESC),
     fact:   cantidad(p && p.fact),
@@ -636,7 +639,7 @@ function guardable(a){
   if(!a || !a.fecha || !["","Volkswagen","Chevrolet"].includes(a.linea)
      || !String(a.proveedor||"").trim()) return false;
   const ps = Array.isArray(a.partidas)?a.partidas:[];
-  if(!ps.length || ps.length > 20) return false;
+  if(!ps.length || ps.length > MAX_PARTIDAS) return false;
   /* Toda partida debe tener código y descripción con texto dentro de los topes,
      y cantidad > 0. Coincide con partidaValida() de firestore.rules. */
   return ps.every(p=>p
@@ -656,7 +659,7 @@ function guardable(a){
    recién creada (ver partidaValida() en firestore.rules). */
 function guardableBorrador(a){
   const ps = Array.isArray(a&&a.partidas)?a.partidas:[];
-  if(!ps.length || ps.length > 20) return false;
+  if(!ps.length || ps.length > MAX_PARTIDAS) return false;
   return ps.every(p=>p
     && String(p.codigo??"").length <= TOPE_CODIGO
     && String(p.desc??"").length   <= TOPE_DESC
@@ -691,7 +694,7 @@ async function guardar(){
   A.hist = huella(A);
   /* Si hubo que descartar filas sobrantes, se informa: el guardado fue exitoso
      pero incompleto, y el usuario debe saberlo. */
-  if(avisoLimite) msg = "Se guardaron las primeras 20 partidas: el límite por auditoría es 20. Las demás no se almacenaron.";
+  if(avisoLimite) msg = "Se guardaron las primeras " + MAX_PARTIDAS + " partidas: el límite por auditoría es " + MAX_PARTIDAS + ". Las demás no se almacenaron.";
   return true;
 }
 
@@ -764,7 +767,7 @@ function paso(n){
     </div>
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Cant. facturada</th><th></th></tr>
     ${filas((p,i)=>`<tr><td><input data-i="${i}" data-k="codigo" value="${esc(p.codigo)}"></td><td><input data-i="${i}" data-k="desc" value="${esc(p.desc)}"></td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="fact" value="${esc(p.fact)}"></td><td><button class="btn del" data-del="${i}" ${A.partidas.length<2?"disabled":""}>Quitar</button></td></tr>`)}
-    </table></div><div class="bar"><button class="btn sec" id="add" ${A.partidas.length>=20?"disabled":""}>Agregar partida</button>${A.partidas.length>=20?`<span class="hint">Máximo 20 partidas por auditoría.</span>`:""}${botonOtroFolio()}</div>${nav()}`;
+    </table></div><div class="bar"><button class="btn sec" id="add" ${A.partidas.length>=MAX_PARTIDAS?"disabled":""}>Agregar partida</button>${A.partidas.length>=MAX_PARTIDAS?`<span class="hint">Máximo ${MAX_PARTIDAS} partidas por auditoría.</span>`:""}${botonOtroFolio()}</div>${nav()}`;
   if(n===3) return `<h2>Recepción física</h2><p class="hint">Cuenta lo que realmente llegó, pieza por pieza, y captura la cantidad recibida de cada partida.</p>
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Facturada</th><th class="n">Recibida</th><th class="n">Diferencia</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${esc(p.fact)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="recib" value="${esc(p.recib)}"></td><td class="n" data-d="${i}">${p.recib===""?"":`<span class="${cls(dR(p))}">${fmt(dR(p))}</span>`}</td></tr>`)}
@@ -1151,8 +1154,8 @@ document.addEventListener("click",async e=>{
     if(b.id==="nHist"){vista="hist";return render();}
     if(b.dataset.go){const k=+b.dataset.go;if(k>=1&&puede(A,k)){A.paso=k;return render();}}
     if(b.id==="add"){
-      if(A.partidas.length<20) A.partidas.push(linea0());
-      else msg="El límite es 20 partidas por auditoría.";
+      if(A.partidas.length<MAX_PARTIDAS) A.partidas.push(linea0());
+      else msg="El límite es "+MAX_PARTIDAS+" partidas por auditoría.";
       return render();
     }
     if(b.dataset.del){A.partidas.splice(+b.dataset.del,1);return render();}
@@ -1590,7 +1593,7 @@ function aplicarExtraccion(){
     .map(x=>({codigo:x.codigo, desc:x.desc, fact:x.fact, recib:"", real:""}));
   if(!nuevas.length) return 0;
   /* Se respeta el tope de 20 partidas que exigen las reglas de Firestore. */
-  const libres = 20 - A.partidas.length;
+  const libres = MAX_PARTIDAS - A.partidas.length;
   const van = nuevas.slice(0, Math.max(0,libres));
   /* Si solo había la fila vacía inicial, se reemplaza en vez de sumar basura. */
   const soloVacia = A.partidas.length===1 && !A.partidas[0].codigo && !A.partidas[0].desc && A.partidas[0].fact==="";
