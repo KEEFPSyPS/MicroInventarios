@@ -1,0 +1,173 @@
+rules_version = '2';
+
+/* ============================================================================
+   Reglas de seguridad de Cloud Firestore — Microinventarios de recepción
+   ----------------------------------------------------------------------------
+   Principios aplicados (estándar internacional):
+     · ISO/IEC 27001:2022 A.5.15 (control de acceso) y A.8.3 (restricción de acceso a la información)
+     · OWASP ASVS 4.0 V4.1/V4.2 (control de acceso a nivel de función y de dato)
+     · OWASP Top 10:2021 A01 (Broken Access Control) y A04 (Insecure Design)
+     · NIST SP 800-53 AC-3 / AC-6 (acceso y mínimo privilegio)
+     · COSO / ISA 315 para trazabilidad de evidencia de auditoría (no repudio)
+
+   Modelo: DENEGAR TODO por defecto. Solo un usuario autenticado con correo
+   verificado puede leer las auditorías; solo puede ESCRIBIR o BORRAR las
+   auditorías que él mismo capturó (principio de mínimo privilegio y no
+   repudio: nadie puede alterar la evidencia de otro).
+   ============================================================================ */
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ---------- Funciones auxiliares ---------- */
+
+    /* ¿Hay sesión? */
+    function autenticado() {
+      return request.auth != null;
+    }
+
+    /* Correo verificado. Se exige para LEER y ESCRIBIR datos de negocio.
+       Las cuentas creadas a mano en la consola nacen sin verificar, así que
+       hay que habilitarles la verificación (ver README de despliegue). */
+    function correoVerificado() {
+      return request.auth != null
+          && request.auth.token.email_verified == true;
+    }
+
+    /* Bloqueo de cuentas deshabilitadas desde la consola (token.custom = "disabled"). */
+    function activo() {
+      return correoVerificado()
+          && (!('custom' in request.auth.token) || request.auth.token.custom != 'disabled');
+    }
+
+    /* Lista de correos con permiso de borrado sobre registros ajenos (gerencia).
+       Se compara contra un correo no vacío: una cadena vacía nunca debe autorizar. */
+    function esDeLaLista() {
+      return request.auth.token.email != null
+          && request.auth.token.email != ''
+          && request.auth.token.email in [
+        'c.moralesm1997@gmail.com'
+      ];
+    }
+
+    /* El documento pertenece a quien lo creó. Nunca se confía en el cliente. */
+    function esPropietario() {
+      return resource.data.uid == request.auth.uid;
+    }
+
+    /* ---------- Validación de esquema de una auditoría ---------- */
+
+    /* Una partida solo admite estos seis campos, todos de texto acotado.
+       IMPORTANTE (límite de evaluación): Firestore corta cada petición a ~1,000
+       expresiones evaluadas. Con la versión anterior (size() > 0 && size() <= N
+       más `is string`, por campo) cada partida gastaba ~45 expresiones, así que
+       20 partidas (justo lo que trae una factura importada) rebasaban el tope y
+       la regla fallaba como permission-denied, mientras que capturar pocas
+       partidas a mano sí cabía. Con matches() se valida tipo Y longitud en UNA
+       sola expresión por campo: si el valor no es texto, matches() da error y
+       la petición se deniega igual que antes. Costo aproximado: ~20 por partida.
+       [\\s\\S] cuenta también saltos de línea, igual que size().
+
+       `codigo` admite CERO caracteres ({0,60}, antes {1,60}) a propósito: una
+       auditoría recién creada trae la fila en blanco obligatoria del formulario
+       y, sin esto, el Paso 1 no se podía guardar NUNCA. Efecto medible: el folio
+       no aparecía en el historial y no había forma de retomarlo, así que no se
+       podían llevar varios folios a la vez. Las partidas de verdad se siguen
+       exigiendo: guardable() (en la app) solo intenta el documento completo con
+       codigo y descripción capturados, y el botón "Guardar y continuar" del
+       Paso 2 no avanza sin ellos. */
+    function partidaValida(p) {
+      return p.keys().hasOnly(['codigo','desc','fact','recib','real','sicar'])
+          && p.codigo.matches('^[\\s\\S]{0,60}$')
+          && p.desc.matches('^[\\s\\S]{0,300}$')
+          && p.fact.matches('^[\\s\\S]{0,12}$')
+          && p.recib.matches('^[\\s\\S]{0,12}$')
+          && p.real.matches('^[\\s\\S]{0,12}$')
+          && p.sicar.matches('^[\\s\\S]{0,12}$');
+    }
+
+    /* Valida el arreglo completo de partidas.
+       El lenguaje NO permite recursión, bucles ni .filter(), y el call stack
+       llega a 20. La única vía válida es indexar de forma explícita: se exige
+       que TODAS las posiciones del arreglo cumplen partidaValida().
+       Se admite hasta 20 partidas; arriba de eso se rechaza por diseño. */
+    function partidasValidas(ps) {
+      return ps is list && ps.size() > 0 && ps.size() <= 20
+          && partidaValida(ps[0])
+          && (ps.size() < 2  || partidaValida(ps[1]))
+          && (ps.size() < 3  || partidaValida(ps[2]))
+          && (ps.size() < 4  || partidaValida(ps[3]))
+          && (ps.size() < 5  || partidaValida(ps[4]))
+          && (ps.size() < 6  || partidaValida(ps[5]))
+          && (ps.size() < 7  || partidaValida(ps[6]))
+          && (ps.size() < 8  || partidaValida(ps[7]))
+          && (ps.size() < 9  || partidaValida(ps[8]))
+          && (ps.size() < 10 || partidaValida(ps[9]))
+          && (ps.size() < 11 || partidaValida(ps[10]))
+          && (ps.size() < 12 || partidaValida(ps[11]))
+          && (ps.size() < 13 || partidaValida(ps[12]))
+          && (ps.size() < 14 || partidaValida(ps[13]))
+          && (ps.size() < 15 || partidaValida(ps[14]))
+          && (ps.size() < 16 || partidaValida(ps[15]))
+          && (ps.size() < 17 || partidaValida(ps[16]))
+          && (ps.size() < 18 || partidaValida(ps[17]))
+          && (ps.size() < 19 || partidaValida(ps[18]))
+          && (ps.size() < 20 || partidaValida(ps[19]));
+    }
+
+    /* Límites de tamaño y coherencia de identidad.
+       Se usa `let` (soportado en rules_version '2', máx. 10 bindings) para no
+       repetir request.resource.data en cada línea. */
+    function contenidoValido() {
+      let d = request.resource.data;
+      return partidasValidas(d.partidas)
+          && d.linea in ['', 'Volkswagen', 'Chevrolet']
+          && d.paso is int && d.paso >= 1 && d.paso <= 6
+          && d.fecha is string && d.fecha.matches('^\\d{4}-\\d{2}-\\d{2}$')
+          && d.folio is string && d.folio.size() <= 60
+          && d.proveedor is string && d.proveedor.size() <= 120
+          && d.encargado is string && d.encargado.size() <= 120
+          && d.verificador is string && d.verificador.size() <= 120
+          && d.id is string && d.id.size() <= 60
+          && d.creado is int && d.creado > 0
+          && d.uid == request.auth.uid
+          && d.email == request.auth.token.email;
+    }
+
+    /* Al actualizar, el creador y el id no se pueden cambiar (anti-suplantación). */
+    function identidadIntacta() {
+      return resource.data.uid == request.resource.data.uid
+          && resource.data.id  == request.resource.data.id;
+    }
+
+    /* ================= Colección: auditorias ================= */
+
+    match /auditorias/{auditoriaId} {
+      /* LECTURA: cualquier miembro del personal con correo verificado. */
+      allow read: if activo();
+
+      /* CREACIÓN: autenticado, id del documento igual al del payload,
+         y esquema completo válido (los campos obligatorios son implícitos:
+         si falta cualquiera, contenidoValido() falla al leerlo). */
+      allow create: if activo()
+                    && request.resource.data.id == auditoriaId
+                    && contenidoValido();
+
+      /* ACTUALIZACIÓN: solo el dueño, sin cambiar identidad, esquema válido. */
+      allow update: if activo()
+                    && esPropietario()
+                    && identidadIntacta()
+                    && contenidoValido();
+
+      /* BORRADO: solo el dueño. La gerencia puede borrar cualquier registro. */
+      allow delete: if activo() && (esPropietario() || esDeLaLista());
+    }
+
+    /* ================= Bloqueo explícito del resto ================= */
+
+    /* Cualquier ruta no declarada queda denegada (defensa en profundidad). */
+    match /{documento=**} {
+      allow read, write: if false;
+    }
+  }
+}
