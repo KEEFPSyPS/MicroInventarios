@@ -55,7 +55,10 @@ const sandbox = {
   console, setTimeout, clearTimeout, setInterval, clearInterval,
   firebase: {}, pdfjsLib: { GlobalWorkerOptions: {} }, jspdf: {},
   Date, Math, JSON, Number, String, Array, Object, Promise, confirm: () => true,
-  alert: () => {}, location: { reload() {} }, navigator: { onLine: true }, Blob: class {}
+  alert: () => {}, location: { reload() {} }, navigator: { onLine: true }, Blob: class {},
+  /* window.addEventListener se usa para pagehide/beforeunload (autoguardado al
+     cerrar). En el DOM real existe; aquí se ignora sin registrarlo. */
+  addEventListener: () => {}, removeEventListener: () => {}
 };
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
@@ -103,7 +106,13 @@ vm.runInContext(code, sandbox, { filename: "index.html" });
 vm.runInContext([
   "globalThis.app = { ULTIMO, PASOS, completa, resumen, resultado, normalizar, guardable,",
   "  huella, hayAvance, botonOtroFolio, bloqueAjuste, paso, render, crearPDF, A, sumarReal,",
-  "  texto: () => nodo('app').innerHTML, estado: () => ({vista, msg}), cloud };"
+  "  textoIndicador, texto: () => nodo('app').innerHTML, estado: () => ({vista, msg}), cloud,",
+  "  autoguardar: () => globalThis.__auto(), programar: () => globalThis.__programar(),",
+  "  intentos: () => globalThis.__intentos, aviso: () => avisoSinGuardar() };",
+  /* Envoltorios que corren dentro del contexto para ver las variables del closure. */
+  "globalThis.__intentos = 0;",
+  "globalThis.__auto = async () => { globalThis.__intentos++; return await autoguardar(); };",
+  "globalThis.__programar = () => programarAutoguardado();"
 ].join("\n"), sandbox);
 const app = sandbox.app;
 const A = app.A;
@@ -200,6 +209,7 @@ ok(app.guardable(viejo) === true, "el documento normalizado pasa guardable()");
 ok(app.huella(A) !== app.huella(viejo), "huella() distingue documentos distintos");
 ok(app.hayAvance(A) === true, "hayAvance() detecta la captura en curso");
 ok(/Empezar otro folio/.test(app.botonOtroFolio()), "botonOtroFolio() se sigue ofreciendo");
+
 
 /* --- PDF: sin columnas SICAR ni "Dif. sistema" --- */
 const pdf = { tablas: [], textos: [], guardado: "" };
@@ -299,6 +309,31 @@ vm.runInContext([
   ok(b.paso === 5 && b.boton === true,
      "en el Paso 5 con avance aparece el botón: \"" + b.texto + "\"");
   ok(/después de A-9912/.test(b.texto), "el botón nombra el folio que se va a guardar");
+
+  /* --- Autoguardado por cambio ---
+     Objetivo: que cerrar la pestaña por error no pierda el conteo. Se comprueba
+     que (a) cada cambio deja un respaldo LOCAL de inmediato (sin esperar al
+     retardo), y (b) el guardado silencioso persiste y apaga el aviso. Todo corre
+     DENTRO del contexto para leer el `A` real (que se reasigna con blank()). */
+  const autoRes = JSON.parse(await vm.runInContext(
+    "(async function(){" +
+    "  A = blank(); vista = 'nueva';" +
+    "  A.folio = 'A-2024'; A.proveedor = 'ACME'; A.encargado = 'Ana';" +
+    "  A.linea = 'Volkswagen'; A.fecha = '2026-05-05'; A.paso = 1;" +
+    "  programarAutoguardado();" +
+    "  const ls = JSON.parse(globalThis.__ls());" +
+    "  const habiaPendiente = huella(A) !== A.hist;" +
+    "  const okAuto = await autoguardar();" +
+    "  return JSON.stringify({ borrador: ls['auditorias_borrador'] || ''," +
+    "    habiaPendiente, okAuto, aSalvo: huella(A) === A.hist," +
+    "    aviso: avisoSinGuardar(), indicador: textoIndicador() });" +
+    "})()", sandbox));
+  ok(/A-2024/.test(autoRes.borrador), "programarAutoguardado() deja el borrador en el respaldo local al instante");
+  ok(autoRes.habiaPendiente === true, "antes de autoguardar la huella difiere del respaldo (hay cambios pendientes)");
+  ok(autoRes.okAuto === true, "autoguardar() confirma el guardado silencioso del borrador");
+  ok(autoRes.aSalvo === true, "tras el autoguardado el avance queda a salvo (huella == respaldo)");
+  ok(autoRes.aviso === "", "con el avance guardable el aviso ya no alarma ('se perderá el folio')");
+  ok(/Guardado/.test(autoRes.indicador), "el indicador muestra 'Guardado' tras el autoguardado");
 })().then(() => {
   console.log(fails ? "\n" + fails + " FALLO(S)" : "\nTODO OK (0 fallos)");
   process.exit(fails ? 1 : 0);

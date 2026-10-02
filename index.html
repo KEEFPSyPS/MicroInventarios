@@ -52,6 +52,14 @@ td.n,th.n{text-align:right;width:110px}
 .dlg p{margin-bottom:10px}
 .dlg .bar{margin-top:16px}
 .avisoFolio .msg{margin:0 0 10px}
+/* Indicador del autoguardado dentro de la barra de cada paso. */
+.avisoFolio{display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap}
+.guardado{font:600 13px Barlow,Arial,sans-serif;padding:3px 10px;border-radius:12px;white-space:nowrap}
+.guardado.gk{background:var(--okbg);color:var(--ok)}
+.guardado.gu{background:var(--acc2);color:var(--acc)}
+.guardado.gn{background:#fdf3d7;color:#8a5a00}
+.avisoAuto{font:500 13px Barlow,Arial,sans-serif;color:var(--ok)}
+.avisoAuto.pend{color:#8a5a00}
 .neg{color:var(--bad);font-weight:700}.pos{color:#8a5a00;font-weight:700}.z{color:var(--ok)}
 tr.hall td{background:var(--badbg)}
 .bar{display:flex;justify-content:space-between;gap:10px;margin-top:16px;flex-wrap:wrap}
@@ -431,6 +439,9 @@ async function mostrarApp(u){
   }
   try{ await render(); }
   catch(err){ $app.innerHTML = `<div class="msg">${esc(err.message||err)}</div>`; }
+  /* Si quedó un borrador local de un cierre inesperado, se ofrece recuperarlo. */
+  recuperarBorrador();
+  if(msg) render();
 }
 
 $form.addEventListener("submit", async e=>{
@@ -727,6 +738,104 @@ async function guardar(){
   return true;
 }
 
+/* ===== Autoguardado =====
+   Guardado automático tras CADA cambio, para que cerrar la pestaña por error (o
+   quedarse sin batería) no borre el conteo ya trabajado. Tres capas:
+     1) Copia local inmediata (localStorage): síncrona, nunca falla ni espera a la
+        red. Es el respaldo de emergencia de este navegador.
+     2) Escritura a Firestore con RETARDO (debounce): agrupa ráfagas de tecleo en
+        una sola escritura, para no castigar la red ni las cuotas.
+     3) Guardado al abandonar la página (cambiar de pestaña o cerrarla).
+   El autoguardado NUNCA molesta con diálogos ni pierde el foco: solo actualiza el
+   indicador de estado. Los guardados explícitos (avanzar de paso, botones) siguen
+   igual y comparten la misma huella (`A.hist`). */
+const AUTOGUARDADO_MS = 900;   /* espera tras la última tecla */
+let autoguardadoTimer = null;  /* debounce de la escritura remota */
+let autoguardando = false;     /* hay una escritura en curso */
+let autoguardadoMsg = "";      /* texto del indicador ("Guardando…", "Guardado 10:32"…) */
+const AUTOGUARDADO_COL = COL + "_borrador"; /* clave local del borrador de emergencia */
+
+/* Copia local inmediata del folio en curso. Se guarda BAJO la clave del borrador
+   (no en la lista principal) para no mezclar borradores de emergencia con las
+   auditorías: al reabrir la app se ofrece recuperarlo. */
+function respaldoLocal(){
+  try{
+    if(!hayAvance(A)){ localStorage.removeItem(AUTOGUARDADO_COL); return; }
+    localStorage.setItem(AUTOGUARDADO_COL, JSON.stringify(JSON.parse(JSON.stringify(A))));
+  }catch(err){ /* localStorage lleno o bloqueado: el respaldo remoto sigue en pie */ }
+}
+
+/* Guardado silencioso: misma validación que guardar(), pero sin diálogos. Devuelve
+   true si el documento quedó a salvo (remoto) o si no había nada que guardar. */
+async function autoguardar(){
+  autoguardadoTimer = null;
+  if(vista !== "nueva") return true;           /* en el historial no se captura */
+  if(cloud && !usuario) return true;           /* sin sesión no hay escritura (ni error) */
+  respaldoLocal();                              /* capa 1: respaldo local inmediato */
+  if(!hayAvance(A)) return true;                /* nada que conservar todavía */
+  if(huella(A) === A.hist) return true;         /* ya está a salvo: no se reescribe */
+  /* Si todavía no cumple el esquema, el respaldo local ya conserva el avance y se
+     intentará de nuevo en el siguiente cambio. */
+  if(!guardable(A) && !guardableBorrador(A)) return true;
+  autoguardando = true;
+  autoguardadoMsg = "Guardando…";
+  actualizarIndicador();
+  try{
+    const ok = await guardar();                 /* capa 2: escritura (Firestore o local) */
+    autoguardadoMsg = ok ? `Guardado ${new Date().toLocaleTimeString("es-MX",{hour:"2-digit",minute:"2-digit"})}`
+                         : "Cambios pendientes";
+    return ok;
+  }catch(err){
+    /* Un fallo de red no debe romper la captura: el respaldo local ya está hecho. */
+    autoguardadoMsg = "Sin conexión: guardado local";
+    return false;
+  }finally{
+    autoguardando = false;
+    actualizarIndicador();
+  }
+}
+
+/* Programa el autoguardado tras la última tecla (debounce). Los cambios se
+   acumulan: si el usuario sigue escribiendo, se reinicia el contador. */
+function programarAutoguardado(){
+  respaldoLocal();                     /* respaldo local SIN esperar al debounce */
+  if(autoguardadoTimer) clearTimeout(autoguardadoTimer);
+  autoguardadoTimer = setTimeout(autoguardar, AUTOGUARDADO_MS);
+}
+
+/* Refresca SOLO el texto del indicador (sin repintar la pantalla ni perder el foco). */
+function actualizarIndicador(){
+  const el = document.getElementById("estadoGuardado");
+  if(el) el.innerHTML = textoIndicador();
+}
+function textoIndicador(){
+  if(autoguardando) return `<span class="guardado gu" role="status">● Guardando…</span>`;
+  if(autoguardadoMsg) return `<span class="guardado ${/Sin conexión/.test(autoguardadoMsg)?"gn":"gk"}" role="status">${esc(autoguardadoMsg)}</span>`;
+  if(huella(A) === A.hist && hayAvance(A)) return `<span class="guardado gk" role="status">✓ Guardado</span>`;
+  return "";
+}
+
+/* Al abrir la app tras un cierre inesperado, si quedó un borrador local con avance
+   (y en pantalla no hay nada nuevo capturado), se ofrece recuperarlo. Así el cierre
+   de pestaña no pierde el conteo ni siquiera cuando la escritura remota no llegó. */
+function recuperarBorrador(){
+  try{
+    if(hayAvance(A)) return;                 /* ya hay algo en pantalla: no se pisa */
+    const crudo = localStorage.getItem(AUTOGUARDADO_COL);
+    if(!crudo) return;
+    const b = JSON.parse(crudo);
+    if(!hayAvance(b)){ localStorage.removeItem(AUTOGUARDADO_COL); return; }
+    const nombre = b.folio ? ` el folio ${b.folio}` : " una captura sin folio";
+    if(!confirm(`Se encontró${nombre} sin terminar (se estaba guardando solo).\n\nAceptar = retomarlo donde quedó.\nCancelar = empezar en blanco (el borrador se descarta).`)){
+      localStorage.removeItem(AUTOGUARDADO_COL);   /* el usuario decidió descartarlo */
+      return;
+    }
+    A = normalizar(b);
+    A.paso = Math.min(ULTIMO, Math.max(1, Math.trunc(num(A.paso)) || 1));
+    msg = `Se recuperó${nombre} tal como quedó.`;
+  }catch(err){ /* borrador ilegible: se ignora sin molestar */ }
+}
+
 /* ===== Render ===== */
 function render(){
   if(cloud && !usuario) return; /* sin sesión no se pinta nada */
@@ -756,7 +865,7 @@ function paso(n){
      siguiente sin antes capturar todas las partidas. Como el folio solo se puede
      guardar una vez escrito, la condición de hayAvance() ya evita ofrecer un botón
      que no haría nada (en un folio recién abierto no aparece). */
-  const navTodos = extra=>(vista==="hist" ? nav(extra) : nav(`<span class="avisoFolio">${vista==="nueva"?avisoSinGuardar():""}</span>`+extra));
+  const navTodos = extra=>(vista==="hist" ? nav(extra) : nav(`<span class="avisoFolio"><span id="estadoGuardado">${textoIndicador()}</span>${avisoSinGuardar()}</span>`+extra));
   if(n===1) return `<h2>Datos de la factura</h2>
     ${avisoSinGuardar()}
     <p class="hint">Captura primero los datos del documento que llegó con la mercancía.
@@ -836,18 +945,16 @@ function hayAvance(a){
   return partidasSeguras(a).some(p=>p && (p.codigo||p.desc||p.fact||p.recib||p.real));
 }
 
-/* Aviso que evita el fallo silencioso más probable de la captura: escribir el
-   folio en pantalla y cerrar o cambiar de vista sin pulsar "Guardar y continuar",
-   con lo que el trabajo se pierde y el folio nunca aparece en el historial.
-   Se mide contra lo que hay GUARDADO en A.hist (huella de la última escritura),
-   no contra una bandera de "sucio": así el aviso desaparece exactamente cuando el
-   avance ya está a salvo en Firestore. */
+/* Aviso de respaldo. Con el autoguardado encendido, el avance se conserva solo:
+   una copia local queda al instante y la escritura remota se dispara con retardo.
+   Por eso aquí NO se alarma con "se perderá el folio" (ya no es cierto). Solo se
+   recuerda guardar cuando el documento todavía NO cumple el esquema (falta fecha,
+   línea, proveedor o folio): hasta entonces no hay nada definitivo que confirmar. */
 function avisoSinGuardar(){
   if(huella(A) === A.hist) return "";
-  return `<div class="msg" style="background:#fdf3d7;color:#8a5a00">
-    <strong>Avance todavía sin guardar.</strong>
-    Si sales de esta pantalla ahora, este folio no aparecerá en el historial.
-    Pulsa <strong>Guardar y continuar</strong> para conservarlo y poder retomarlo después.</div>`;
+  if(guardable(A) || guardableBorrador(A))
+    return `<span class="avisoAuto" title="Se guarda solo mientras capturas">Si cierras ahora, tu avance queda a salvo.</span>`;
+  return `<span class="avisoAuto pend" title="El folio aún no se puede guardar">Aún sin guardar: completa fecha, línea, proveedor y folio.</span>`;
 }
 
 /* Huella del avance capturado. Puede ser "optimista" (marcar algo como guardado
@@ -1061,6 +1168,9 @@ document.addEventListener("input",e=>{
     if(t.dataset.k==="recib"){const c=document.querySelector(`[data-d="${t.dataset.i}"]`);if(c)c.innerHTML=p.recib===""?"":`<span class="${cls(dR(p))}">${fmt(dR(p))}</span>`;}
   } else return;
   const s=$("#sig"); if(s) s.disabled=!PASOS[A.paso-1].ok(A);
+  /* Autoguardado: cada tecla/valor dispara (con retardo) la escritura, para que
+     cerrar la pestaña nunca pierda lo capturado. */
+  programarAutoguardado();
 });
 
 /* Aviso de folio duplicado mientras se teclea (no en cada tecla: solo cuando el
@@ -1083,6 +1193,13 @@ document.addEventListener("focusout", async e=>{
 });
 document.addEventListener("change", async e=>{
   const t = e.target;
+  /* Campos del formulario y de las tablas: algunos navegadores no emiten `input`
+     para <select> ni rellenando fecha con el calendario. Se programa aquí el
+     autoguardado para no perder ese cambio (los campos data-f de la cabecera y
+     los data-k de las partidas). En modo historial no se captura, así que se ignora. */
+  if(vista === "nueva" && t && !t.dataset.go && (t.dataset.f || t.dataset.k)){
+    programarAutoguardado();
+  }
   /* Al salir del Paso 1 se guarda el folio SOLO: es el momento en que el usuario
      ya tiene los datos de la factura y lo más probable es que continúe después.
      Si esto se dejara al "Guardar y continuar", cerrar la pestaña aquí perdía el
@@ -1149,6 +1266,8 @@ document.addEventListener("change", async e=>{
   }finally{
     /* Se limpia el input para que el archivo deje de estar referenciado. */
     t.value = "";
+    /* Los datos tomados del CFDI (folio/proveedor/fecha o partidas) se guardan solos. */
+    if(vista === "nueva") programarAutoguardado();
   }
 });
 
@@ -1160,6 +1279,7 @@ document.addEventListener("click",async e=>{
       facturaPendiente = null;
       msg = n ? `Se cargaron ${n} partidas desde la factura. No se guardó ninguna copia del archivo.`
               : "No se cargó ninguna partida: revisa que el código y la cantidad sean válidos.";
+      programarAutoguardado();  /* las partidas cargadas se conservan aunque se cierre la pestaña */
       return render();
     }
     if(b.id==="cancelarFact" || b.id==="limpiarFact"){
@@ -1322,6 +1442,26 @@ document.addEventListener("click",async e=>{
     }
   }catch(err){ msg="No se pudo completar la acción: "+err.message; vista==="hist"?renderHist():render(); }
 });
+
+/* Al abandonar la página (cambiar de pestaña o cerrarla) se fuerza el guardado
+   pendiente. `visibilitychange` cubre cambiar de app/pestaña en móvil, que es de
+   donde vienen la mayoría de los "cierres sin querer". En el respaldo local se
+   escribe de forma SÍNCRONA (nunca se pierde); en Firestore se dispara la escritura
+   sin esperarla, que es lo mejor que permite el navegador al cerrar. */
+function guardarAlSalir(){
+  if(vista !== "nueva") return;
+  respaldoLocal();
+  if(autoguardadoTimer) { clearTimeout(autoguardadoTimer); autoguardadoTimer = null; }
+  if(hayAvance(A) && huella(A) !== A.hist && (guardable(A) || guardableBorrador(A)) && (!cloud || usuario)){
+    /* Se lanza sin await: en `pagehide` no hay tiempo de esperar la respuesta. */
+    try{ guardar(); }catch(err){}
+  }
+}
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState === "hidden") guardarAlSalir(); });
+window.addEventListener("pagehide", guardarAlSalir);
+/* Respaldo extra en escritorio cuando se cierra la ventana: NO se usa preventDefault
+   (no se quiere bloquear el cierre), solo se aprovecha para guardar el respaldo local. */
+window.addEventListener("beforeunload", ()=>{ if(vista === "nueva") respaldoLocal(); });
 
 /* ===== Extracción de partidas desde la factura (XML CFDI o PDF) =====
    IMPORTANTE: el archivo nunca se sube ni se guarda. Se lee en memoria con la

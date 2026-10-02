@@ -111,7 +111,7 @@ de `auditorias` con `correoVerificado()`).
 
 | Límite | Valor | Motivo |
 |---|---|---|
-| Partidas por auditoría | 20 | Sin recursión ni bucles en el lenguaje de reglas |
+| Partidas por auditoría | 70 | Sin recursión ni bucles en el lenguaje de reglas (`MAX_PARTIDAS` y `partidasValidas()` deben coincidir) |
 | Longitud de `codigo` | 60 | Validación de entrada (OWASP ASVS V5) |
 | Longitud de `desc` | 300 | Igual |
 | Longitud de cantidades | 12 | Igual |
@@ -145,9 +145,38 @@ guardarlo una vez. Las reglas solo validan que `partidas` sea una lista de 1 a 7
 elementos (no los campos individuales), así que **no exige volver a desplegar
 `firestore.rules`**.
 
-**Importante:** si vienes de la versión con el paso de SICAR, ese cambio sí exigía
-volver a desplegar las reglas (`firebase deploy --only firestore:rules`); una vez
-desplegadas, el conteo por división no requiere más despliegues de reglas.
+**Importante:** la migración (incluido el conteo por división) y el autoguardado
+**no exigen volver a desplegar `firestore.rules`**. Solo la eliminación histórica
+del paso de SICAR requirió un despliegue de reglas (`firebase deploy --only
+firestore:rules`); una vez desplegadas, no hace falta ningún despliegue más.
+
+## Autoguardado (no se pierde el avance al cerrar la pestaña)
+
+Antes, si el encargado capturaba parte de un folio y **cerraba la pestaña sin
+pulsar «Guardar y continuar»**, ese conteo se perdía. Ahora **cada cambio se
+guarda solo**, con tres capas de seguridad:
+
+1. **Respaldo local inmediato (`localStorage`).** En cuanto se escribe en cualquier
+   campo (o se cambia de valor), el folio se copia al instante bajo la clave
+   `auditorias_borrador`. Es **síncrono**: no espera a la red ni depende de Firebase.
+   Es lo que hace que, incluso sin conexión o si la pestaña se cierra de golpe, el
+   avance quede recuperable.
+2. **Escritura remota con retardo (*debounce*, ~900 ms).** Tras la última tecla se
+   escribe una sola vez en Firestore (o en `localStorage` cuando no hay Firebase),
+   para no saturar la red ni las cuotas con cada letra.
+3. **Guardado al abandonar la página.** Escuchando `visibilitychange` (cambiar de
+   pestaña/aplicación en móvil) y `pagehide`/`beforeunload` (cerrar la ventana) se
+   fuerza el guardado pendiente antes de salir.
+
+Durante la captura, la barra de cada paso muestra un **indicador de estado**:
+«Guardando…», «✓ Guardado HH:MM» o «Sin conexión: guardado local». El aviso de
+«avance sin guardar» ya **no alarma** diciendo que el folio se perderá: mientras el
+documento sea guardable recuerda «Si cierras ahora, tu avance queda a salvo».
+
+**Recuperación tras un cierre inesperado:** al volver a abrir la app, si quedó un
+borrador local con avance, se ofrece **retomarlo donde quedó** (o empezar en blanco).
+Así el conteo sobrevive incluso cuando la escritura remota no llegó a confirmarse.
+
 
 ## Prueba automatizada del flujo
 
@@ -162,9 +191,10 @@ Cubre: número y títulos de los pasos, captura completa sin `sicar`, el conteo 
 anaquel **dividido en dos cantidades (PV y BR) que suman el total**, llegada al
 Paso 5 por clics reales, contenido de `resumen()`/`resultado()` (con totales PV y BR
 separados), persistencia del documento normalizado, degradación y **migración** de
-documentos antiguos (paso 6 con `sicar`, o con un `real` único), botón «Empezar otro
-folio» y el PDF con las columnas Real PV / Real BR / Real total y sin columnas SICAR
-/ «Dif. sistema».
+documentos antiguos (paso 6 con `sicar`, o con un `real` único), **el autoguardado**
+(respaldo local inmediato, guardado silencioso y aviso que ya no alarma), botón
+«Empezar otro folio» y el PDF con las columnas Real PV / Real BR / Real total y sin
+columnas SICAR / «Dif. sistema».
 
 ## Lectura vs escritura
 
