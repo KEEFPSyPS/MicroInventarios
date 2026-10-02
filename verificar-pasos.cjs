@@ -102,7 +102,7 @@ vm.runInContext(code, sandbox, { filename: "index.html" });
 /* Handles y helpers, evaluados dentro del contexto para compartir reino. */
 vm.runInContext([
   "globalThis.app = { ULTIMO, PASOS, completa, resumen, resultado, normalizar, guardable,",
-  "  huella, hayAvance, botonOtroFolio, bloqueAjuste, paso, render, crearPDF, A,",
+  "  huella, hayAvance, botonOtroFolio, bloqueAjuste, paso, render, crearPDF, A, sumarReal,",
   "  texto: () => nodo('app').innerHTML, estado: () => ({vista, msg}), cloud };"
 ].join("\n"), sandbox);
 const app = sandbox.app;
@@ -117,7 +117,7 @@ A.folio = "A-9912"; A.encargado = "Luis";
 A.partidas = [{ codigo: "ABC-1", desc: "Filtro", fact: "10" }];
 app.normalizar(A);
 A.paso = 3; A.partidas[0].recib = "8";
-A.paso = 4; A.verificador = "Ana"; A.partidas[0].real = "7";
+A.paso = 4; A.verificador = "Ana"; A.partidas[0].realPV = "4"; A.partidas[0].realBR = "3"; A.partidas[0].real = "7";
 A.paso = 5;
 
 ok(app.ULTIMO === 5, "ULTIMO === 5 (cinco pasos)");
@@ -150,12 +150,36 @@ const hall = app.paso(5);
 ok(!/SICAR/i.test(hall), "la pantalla de hallazgos no lista columna SICAR");
 ok(/data-go="4"/.test(hall), "el boton Anterior del paso 5 lleva al paso 4");
 
+/* --- Paso 4: conteo dividido en dos columnas (PV y BR) que suman el total --- */
+const p4 = app.paso(4);
+ok(/data-k="realPV"/.test(p4) && /data-k="realBR"/.test(p4),
+   "el Paso 4 ofrece columnas separadas de captura para PV y BR");
+ok(/Piso de Ventas/.test(p4) && /Bodega/.test(p4) && /Total real/.test(p4),
+   "el Paso 4 etiqueta PV (Piso de Ventas), BR (Bodega) y el Total real");
+ok(!/data-k="division"/.test(p4) && !/<select/.test(p4),
+   "el Paso 4 ya no usa el selector de división (ahora son dos cantidades)");
+ok(!app.PASOS[3].ok({ verificador: "V", partidas: [{ realPV: "", realBR: "3" }] }),
+   "el Paso 4 no se da por ok si falta la cantidad de PV");
+ok(!app.PASOS[3].ok({ verificador: "V", partidas: [{ realPV: "4", realBR: "" }] }),
+   "el Paso 4 no se da por ok si falta la cantidad de BR");
+ok(app.PASOS[3].ok({ verificador: "V", partidas: [{ realPV: "4", realBR: "3" }] }),
+   "el Paso 4 se da por ok con PV y BR capturados en cada partida");
+ok(app.sumarReal({ realPV: "4", realBR: "3" }) === "7",
+   "sumarReal() suma PV + BR = 7");
+ok(app.sumarReal({ realPV: "", realBR: "" }) === "",
+   "sumarReal() deja el total vacío si no hay conteo en ninguna división");
+ok(app.sumarReal({ realPV: "4", realBR: "" }) === "4",
+   "sumarReal() toma solo PV si BR está vacío (parte no contada en Bodega)");
+
 /* --- Resumen, resultado y bloque de ajuste --- */
 const r = app.resumen([A]);
 ok(r.part === 1 && r.falt === 2 && r.sobr === 0,
    "resumen: part=" + r.part + " falt=" + r.falt + " sobr=" + r.sobr + " (recib 8 vs fact 10)");
 ok(r.neto === undefined, "resumen ya no devuelve neto (real vs SICAR)");
 ok(r.totalAjuste === r.recib + r.real, "totalAjuste = recibido + real = " + r.totalAjuste);
+ok(r.real === 7 && r.realPV === 4 && r.realBR === 3,
+   "resumen separa el conteo: realPV=" + r.realPV + " realBR=" + r.realBR + " real=" + r.real);
+ok(r.real === r.realPV + r.realBR, "resumen: real (PV+BR) = " + r.real);
 ok(app.resultado({ codigo: "x", fact: "10", recib: "8", real: "7", sicar: "99" }) === "Faltante en recepci\u00f3n",
    "resultado() ignora el sicar de un documento viejo");
 ok(!/SICAR/.test(app.bloqueAjuste(r)), "el bloque de ajuste en pantalla no cita SICAR");
@@ -165,8 +189,10 @@ const viejo = app.normalizar({ id: "v1", fecha: "2026-09-01", linea: "Chevrolet"
   proveedor: "P", creado: 1, partidas: [{ codigo: "C", desc: "D", fact: "5", recib: "5", real: "5", sicar: "4" }], paso: 6 });
 ok(viejo.paso === 5, "un documento guardado en el paso 6 se degrada al paso " + viejo.paso);
 ok(!("sicar" in viejo.partidas[0]), "normalizar() descarta sicar (hasOnly() lo rechazaria)");
-ok(Object.keys(viejo.partidas[0]).join(",") === "codigo,desc,fact,recib,real",
-   "la partida queda con los cinco campos: " + Object.keys(viejo.partidas[0]).join(","));
+ok(Object.keys(viejo.partidas[0]).join(",") === "codigo,desc,fact,recib,realPV,realBR,real",
+   "la partida queda con los seis campos (PV, BR y total): " + Object.keys(viejo.partidas[0]).join(","));
+ok(viejo.partidas[0].realPV === "5" && viejo.partidas[0].realBR === "" && viejo.partidas[0].real === "5",
+   "un documento viejo con solo 'real' migra su total a PV (realPV=5, realBR='', real=5)");
 ok(app.completa(viejo) === true, "el documento viejo sigue contando como completo");
 ok(app.guardable(viejo) === true, "el documento normalizado pasa guardable()");
 
@@ -201,12 +227,12 @@ ok(!/SICAR/.test(cabeceras) && !/Dif\. sistema/.test(cabeceras),
    "ninguna tabla del PDF tiene SICAR ni 'Dif. sistema'");
 ok(!/SICAR/i.test(pdf.textos.join(" ")), "ningun texto del PDF cita SICAR");
 const detalle = pdf.tablas.filter(t => /C\u00f3digo/.test(t.head.join("")))[0];
-ok(!!detalle && detalle.head.join("|") === "C\u00f3digo|Descripci\u00f3n|Fact.|Recib.|Dif. recep.|Real|Resultado",
-   "la tabla por partida tiene 7 columnas en orden: " + (detalle ? detalle.head.join(" | ") : "sin tabla"));
+ok(!!detalle && detalle.head.join("|") === "C\u00f3digo|Descripci\u00f3n|Fact.|Recib.|Dif. recep.|Real PV|Real BR|Real total|Resultado",
+   "la tabla por partida tiene 9 columnas con Real PV, Real BR y Real total en orden: " + (detalle ? detalle.head.join(" | ") : "sin tabla"));
 const celda = i => ({ section: "body", column: { index: i }, row: { raw: [] }, cell: { styles: {} } });
-let c = celda(6); c.row.raw[6] = "Faltante en recepci\u00f3n"; detalle.resalta(c);
-ok(Array.isArray(c.cell.styles.fillColor), "un hallazgo pinta la fila usando el indice 6 (Resultado)");
-c = celda(6); c.row.raw[6] = "Conforme"; detalle.resalta(c);
+let c = celda(8); c.row.raw[8] = "Faltante en recepci\u00f3n"; detalle.resalta(c);
+ok(Array.isArray(c.cell.styles.fillColor), "un hallazgo pinta la fila usando el indice 8 (Resultado)");
+c = celda(8); c.row.raw[8] = "Conforme"; detalle.resalta(c);
 ok(!c.cell.styles.fillColor, "una partida conforme no se pinta");
 
 /* --- Navegacion real: clic en "Guardar y continuar" por los cinco pasos ---

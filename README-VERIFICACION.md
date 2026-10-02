@@ -128,18 +128,26 @@ El paso **«Existencia en SICAR»** se eliminó por completo, junto con su colum
 | 1 | Datos de la factura | Fecha, línea, proveedor, folio, encargado |
 | 2 | Partidas facturadas | Código, descripción y cantidad facturada |
 | 3 | Recepción física | Cantidad recibida (y su diferencia contra la factura) |
-| 4 | Conteo en anaquel | Verificador y existencia real contada |
+| 4 | Conteo en anaquel | Verificador y existencia real contada **por división**: PV (Piso de Ventas) y BR (Bodega) |
 | 5 | Hallazgos y reporte | Resumen, conteo para ajuste y descarga del PDF |
 
-Cada partida se guarda con **cinco campos**: `codigo`, `desc`, `fact`, `recib`,
-`real`. Las reglas usan `hasOnly()`, así que un documento guardado con la versión
-anterior (con `sicar` y `paso: 6`) **no se puede volver a guardar tal cual**: la
-app lo normaliza al abrirlo (descarta `sicar` y baja el paso a 5), por lo que
-basta reabrirlo y guardarlo una vez.
+Cada partida se guarda con **seis campos**: `codigo`, `desc`, `fact`, `recib`,
+`realPV`, `realBR` y `real`. En el Paso 4 el verificador captura **dos cantidades
+separadas** —`realPV` (piezas en Piso de Ventas) y `realBR` (piezas en Bodega)— y el
+total `real` se calcula como `realPV + realBR` (ver `sumarReal()`). Así el reporte
+muestra la existencia **dividida por ubicación** y, en la misma línea, su total.
 
-**Importante:** este cambio también exige volver a desplegar las reglas
-(`firebase deploy --only firestore:rules`); si no, la escritura fallará con
-`permission-denied` porque la regla publicada todavía exigiría `sicar`.
+Un documento guardado con la versión anterior (con `division` y/o `sicar`, y
+`paso: 6`) **no se puede volver a guardar tal cual**: la app lo normaliza al abrirlo
+(descarta `sicar`, baja el paso a 5 y, si traía un `real` único sin divisiones,
+migra ese total a `realPV` para no perder el conteo), por lo que basta reabrirlo y
+guardarlo una vez. Las reglas solo validan que `partidas` sea una lista de 1 a 70
+elementos (no los campos individuales), así que **no exige volver a desplegar
+`firestore.rules`**.
+
+**Importante:** si vienes de la versión con el paso de SICAR, ese cambio sí exigía
+volver a desplegar las reglas (`firebase deploy --only firestore:rules`); una vez
+desplegadas, el conteo por división no requiere más despliegues de reglas.
 
 ## Prueba automatizada del flujo
 
@@ -150,10 +158,13 @@ mínimo (sin navegador) y comprueba el rediseño de cinco pasos:
 node verificar-pasos.cjs
 ```
 
-Cubre: número y títulos de los pasos, captura completa sin `sicar`, llegada al
-Paso 5 por clics reales, contenido de `resumen()`/`resultado()`, persistencia del
-documento normalizado, degradación de documentos antiguos (paso 6 con `sicar`),
-botón «Empezar otro folio» y el PDF sin columnas SICAR / «Dif. sistema».
+Cubre: número y títulos de los pasos, captura completa sin `sicar`, el conteo en
+anaquel **dividido en dos cantidades (PV y BR) que suman el total**, llegada al
+Paso 5 por clics reales, contenido de `resumen()`/`resultado()` (con totales PV y BR
+separados), persistencia del documento normalizado, degradación y **migración** de
+documentos antiguos (paso 6 con `sicar`, o con un `real` único), botón «Empezar otro
+folio» y el PDF con las columnas Real PV / Real BR / Real total y sin columnas SICAR
+/ «Dif. sistema».
 
 ## Lectura vs escritura
 

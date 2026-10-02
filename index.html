@@ -503,9 +503,24 @@ const num = v=>(v===""||v==null)?null:Number(v);
 const uid = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
 const esc = s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const hoy = ()=>{const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)};
-const linea0 = ()=>({codigo:"",desc:"",fact:"",recib:"",real:""});
+/* Cada partida guarda los datos de identidad/cantidad (codigo, desc, fact, recib)
+   y, desde el Paso 4, el conteo en anaquel SEPARADO por división:
+   `realPV` (Piso de Ventas) y `realBR` (Bodega). `real` es la suma de ambas y se
+   calcula solo (ver sumarReal()), para que el resto de la app (resultado, resumen,
+   ajuste y PDF) siga trabajando con una única existencia total. */
+const DIVISIONES = ["PV","BR"];
+const DIVISION_TXT = {PV:"Piso de Ventas", BR:"Bodega"};
+const linea0 = ()=>({codigo:"",desc:"",fact:"",recib:"",realPV:"",realBR:"",real:""});
 const blank = ()=>({id:uid(),fecha:hoy(),linea:"",proveedor:"",folio:"",encargado:"",verificador:"",partidas:[linea0()],paso:1,creado:Date.now()});
 const dR = p=>num(p.recib)-num(p.fact);
+/* Existencia real total = Piso de Ventas + Bodega. Se recalcula SIEMPRE desde las
+   dos divisiones para que `real` nunca quede desincronizado. Si NINGUNA de las
+   dos divisiones tiene captura (ambas "") el total queda "" (partida sin contar). */
+function sumarReal(p){
+  const pv = num(p && p.realPV), br = num(p && p.realBR);
+  if(pv==null && br==null) return "";
+  return String((pv||0)+(br||0));
+}
 const fmt = n=>n>0?"+"+n:String(n);
 const cls = n=>n<0?"neg":n>0?"pos":"z";
 /* Paso 5 (Existencia en SICAR) y su comparación "Dif. sistema" se eliminaron a
@@ -526,7 +541,7 @@ function resultado(p){
 const completa = a=>Array.isArray(a&&a.partidas)&&a.partidas.length>0&&
   a.partidas.every(p=>p&&p.recib!==""&&p.real!=="");
 function resumen(list){
-  let part=0,hall=0,falt=0,sobr=0,recib=0,real=0,fact=0;
+  let part=0,hall=0,falt=0,sobr=0,recib=0,real=0,realPV=0,realBR=0,fact=0;
   /* Se comprueba cada nivel: un documento antiguo sin "partidas" (o con una
      partida nula) hacía fallar esta función, y con ella el historial y el PDF. */
   (Array.isArray(list)?list:[]).forEach(a=>{
@@ -535,6 +550,8 @@ function resumen(list){
       part++; if(resultado(p)!=="Conforme")hall++;
       const r=dR(p); if(r<0)falt+=-r; if(r>0)sobr+=r;
       fact+=num(p.fact)||0; recib+=num(p.recib)||0; real+=num(p.real)||0;
+      /* Conteo separado por división: PV (Piso de Ventas) y BR (Bodega). */
+      realPV+=num(p.realPV)||0; realBR+=num(p.realBR)||0;
     });
   });
   /* Totales para ajustar inventario. Solo tienen valor como ajuste cuando la
@@ -542,7 +559,7 @@ function resumen(list){
      factura y la suma no debe usarse para mover existencias. */
   const recepcionConforme = (falt===0 && sobr===0);
   const totalAjuste = recib + real;
-  return {aud:list.length,part,hall,falt,sobr,fact,recib,real,recepcionConforme,totalAjuste};
+  return {aud:list.length,part,hall,falt,sobr,fact,recib,real,realPV,realBR,recepcionConforme,totalAjuste};
 }
 
 /* ===== Pasos, en el orden obligatorio de captura ===== */
@@ -555,7 +572,7 @@ const PASOS = [
   {t:"Datos de la factura", ok:a=>!!(a.fecha&&a.linea&&String(a.proveedor||"").trim()&&String(a.folio||"").trim()&&String(a.encargado||"").trim())},
   {t:"Partidas facturadas", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&String(p.codigo||"").trim()&&String(p.desc||"").trim()&&num(p.fact)>0)}},
   {t:"Recepción física", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&p.recib!=="")}},
-  {t:"Conteo en anaquel", ok:a=>{const ps=partidasSeguras(a);return !!String(a.verificador||"").trim()&&ps.length>0&&ps.every(p=>p&&p.real!=="")}},
+  {t:"Conteo en anaquel", ok:a=>{const ps=partidasSeguras(a);return !!String(a.verificador||"").trim()&&ps.length>0&&ps.every(p=>p&&p.realPV!==""&&p.realBR!=="")}},
   {t:"Hallazgos y reporte", ok:()=>true}
 ];
 const ULTIMO = PASOS.length; /* 5: se usa en las guardas de paso en lugar de un 6 fijo */
@@ -610,20 +627,30 @@ function normalizar(a){
      perder datos a escondidas. */
   const filas = Array.isArray(a.partidas) && a.partidas.length ? a.partidas : [linea0()];
   if(filas.length > MAX_PARTIDAS) avisoLimite = true;
-  /* Se escriben SIEMPRE los cinco campos del esquema, aunque el origen los traiga
-     incompletos. partidaValida() de firestore.rules usa hasOnly() y comprueba
-     `is string` en fact/recib/real: un `undefined` (campo ausente) o un
-     número hacían fallar el guardado COMPLETO con permission-denied.
-     El antiguo campo `sicar` NO se escribe: hasOnly() lo rechazaría justamente
-     por sobrar, así que un documento viejo que lo traiga lo pierde aquí (a
-     propósito: el dato ya no se usa en ninguna parte de la app). */
-  a.partidas = filas.slice(0, MAX_PARTIDAS).map(p=>({
-    codigo: txt(p && p.codigo, TOPE_CODIGO),
-    desc:   txt(p && p.desc, TOPE_DESC),
-    fact:   cantidad(p && p.fact),
-    recib:  cantidad(p && p.recib),
-    real:   cantidad(p && p.real),
-  }));
+  /* Se escriben SIEMPRE los SEIS campos de la partida (codigo, desc, fact, recib,
+     realPV, realBR, real), aunque el origen los traiga incompletos. Las reglas
+     usan hasOnly() a nivel partida? No: solo validan que `partidas` sea lista de
+     1..70, pero normalizar deja una forma consistente para toda la app.
+     `real` se recalcula como realPV + realBR para que nunca quede desincronizado;
+     un documento viejo con `real` pero sin las divisiones conserva su total en PV
+     (no se pierde el conteo ya capturado). El antiguo campo `sicar` NO se escribe. */
+  a.partidas = filas.slice(0, MAX_PARTIDAS).map(p=>{
+    const realPV = cantidad(p && p.realPV);
+    const realBR = cantidad(p && p.realBR);
+    /* Documento de la versión anterior (solo `real`, sin divisiones): se migra
+       poniendo el total en PV para no perder el conteo que ya estaba capturado. */
+    const migrado = realPV==="" && realBR==="" && cantidad(p && p.real)!=="";
+    const fila = {
+      codigo: txt(p && p.codigo, TOPE_CODIGO),
+      desc:   txt(p && p.desc, TOPE_DESC),
+      fact:   cantidad(p && p.fact),
+      recib:  cantidad(p && p.recib),
+      realPV: migrado ? cantidad(p && p.real) : realPV,
+      realBR: realBR,
+    };
+    fila.real = sumarReal(fila);
+    return fila;
+  });
   return a;
 }
 
@@ -663,11 +690,13 @@ function guardableBorrador(a){
   return ps.every(p=>p
     && String(p.codigo??"").length <= TOPE_CODIGO
     && String(p.desc??"").length   <= TOPE_DESC
-    /* Las dos cantidades NO pueden quedar en notación larga: las reglas
+    /* Las cantidades NO pueden quedar en notación larga: las reglas
        aceptan máximo 12 caracteres y el documento completo se rechazaría. */
     && String(p.fact??"").length  <= 12
     && String(p.recib??"").length <= 12
-    && String(p.real??"").length  <= 12);
+    && String(p.real??"").length  <= 12
+    && String(p.realPV??"").length <= 12
+    && String(p.realBR??"").length <= 12);
 }
 
 async function guardar(){
@@ -772,10 +801,10 @@ function paso(n){
     <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Facturada</th><th class="n">Recibida</th><th class="n">Diferencia</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${esc(p.fact)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="recib" value="${esc(p.recib)}"></td><td class="n" data-d="${i}">${p.recib===""?"":`<span class="${cls(dR(p))}">${fmt(dR(p))}</span>`}</td></tr>`)}
     </table></div>${navTodos(botonOtroFolio())}`;
-  if(n===4) return `<h2>Conteo en anaquel</h2><p class="hint">Lo hace el verificador, por separado del encargado. Las cantidades esperadas no se muestran para que el conteo sea independiente: cuenta la existencia total de cada código en su ubicación.</p>
+  if(n===4) return `<h2>Conteo en anaquel</h2><p class="hint">Lo hace el verificador, por separado del encargado. Las cantidades esperadas no se muestran para que el conteo sea independiente. Cuenta la existencia de cada código <strong>dividida por ubicación</strong>: las piezas del <strong>Piso de Ventas (PV)</strong> y las de la <strong>Bodega (BR)</strong>; el total se suma solo.</p>
     <div class="grid"><label>Verificador<input data-f="verificador" value="${esc(A.verificador)}"></label></div>
-    <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Existencia real</th></tr>
-    ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="real" value="${esc(p.real)}"></td></tr>`)}
+    <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">PV · Piso de Ventas</th><th class="n">BR · Bodega</th><th class="n">Total real</th></tr>
+    ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="realPV" value="${esc(p.realPV)}"></td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="realBR" value="${esc(p.realBR)}"></td><td class="n" data-t="${i}">${p.real===""?"":esc(p.real)}</td></tr>`)}
     </table></div>${navTodos(botonOtroFolio())}`;
   /* n===5 es AHORA la pantalla de hallazgos: el antiguo paso de captura de SICAR
      desapareció, así que no hay ningún bloque intermedio que devolver aquí. */
@@ -788,8 +817,8 @@ function paso(n){
       <div class="kpi"><span>Piezas sobrantes</span><strong>${r.sobr}</strong></div>
     </div>
     ${bloqueAjuste(r)}
-    <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Facturada</th><th class="n">Recibida</th><th class="n">Real</th><th>Resultado</th></tr>
-    ${filas(p=>`<tr class="${resultado(p)==="Conforme"?"":"hall"}"><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${p.fact}</td><td class="n">${p.recib}</td><td class="n">${p.real}</td><td>${resultado(p)}</td></tr>`)}
+    <div class="tw"><table><tr><th>Código</th><th>Descripción</th><th class="n">Fact.</th><th class="n">Recib.</th><th class="n">Real PV</th><th class="n">Real BR</th><th class="n">Real total</th><th>Resultado</th></tr>
+    ${filas(p=>`<tr class="${resultado(p)==="Conforme"?"":"hall"}"><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${p.fact}</td><td class="n">${p.recib}</td><td class="n">${p.realPV===""?"—":p.realPV}</td><td class="n">${p.realBR===""?"—":p.realBR}</td><td class="n">${p.real}</td><td>${resultado(p)}</td></tr>`)}
     </table></div>
     <div class="bar"><button class="btn sec" data-go="4">Anterior</button><span class="row">${botonOtroFolio()}<button class="btn" id="pdf">Descargar PDF</button></span></div>`;
 }
@@ -828,10 +857,10 @@ function avisoSinGuardar(){
 function huella(a){
   return [a && a.folio, a && a.fecha, a && a.linea, a && a.proveedor,
           a && a.encargado, a && a.verificador, a && a.paso,
-          /* Se incluyen los cinco campos de la partida (ya sin `sicar`): si se
-             dejara fuera alguno, capturarlo no cambiaría la huella y el aviso de
+          /* Se incluyen los campos de la partida (ya sin `sicar`): si se dejara
+             fuera alguno, capturarlo no cambiaría la huella y el aviso de
              "sin guardar" no aparecería (y el usuario perdería el dato al salir). */
-          partidasSeguras(a).map(p=>[p&&p.codigo,p&&p.desc,p&&p.fact,p&&p.recib,p&&p.real].join("\u0001")).join("\u0002")
+          partidasSeguras(a).map(p=>[p&&p.codigo,p&&p.desc,p&&p.fact,p&&p.recib,p&&p.realPV,p&&p.realBR,p&&p.real].join("\u0001")).join("\u0002")
          ].join("\u0000");
 }
 
@@ -935,7 +964,9 @@ function bloqueAjuste(r){
       <tr><th>Concepto</th><th class="n">Piezas</th></tr>
       <tr><td>Total facturado</td><td class="n">${r.fact}</td></tr>
       <tr><td>Total recibido</td><td class="n">${r.recib}</td></tr>
-      <tr><td>Total real en anaquel</td><td class="n">${r.real}</td></tr>
+      <tr><td>Real en Piso de Ventas (PV)</td><td class="n">${r.realPV}</td></tr>
+      <tr><td>Real en Bodega (BR)</td><td class="n">${r.realBR}</td></tr>
+      <tr><td>Total real en anaquel (PV + BR)</td><td class="n">${r.real}</td></tr>
       <tr><td><strong>Recibido + Real (conteo total)</strong></td><td class="n"><strong>${r.totalAjuste}</strong></td></tr>
     </table></div>`;
   if(r.recepcionConforme){
@@ -1019,7 +1050,15 @@ document.addEventListener("input",e=>{
   if(t.dataset.f){ A[t.dataset.f]=t.value; }
   else if(t.dataset.k){
     A.partidas[+t.dataset.i][t.dataset.k]=t.value;
-    if(t.dataset.k==="recib"){const c=document.querySelector(`[data-d="${t.dataset.i}"]`);const p=A.partidas[+t.dataset.i];if(c)c.innerHTML=p.recib===""?"":`<span class="${cls(dR(p))}">${fmt(dR(p))}</span>`;}
+    const p=A.partidas[+t.dataset.i];
+    /* Conteo en anaquel dividido: al editar PV o BR se recalcula la existencia
+       total (`real`) y se refresca solo su celda, sin repintar toda la pantalla
+       para no perder el foco del campo que se está escribiendo. */
+    if(t.dataset.k==="realPV" || t.dataset.k==="realBR"){
+      p.real=sumarReal(p);
+      const c=document.querySelector(`[data-t="${t.dataset.i}"]`); if(c) c.textContent=p.real===""?"":p.real;
+    }
+    if(t.dataset.k==="recib"){const c=document.querySelector(`[data-d="${t.dataset.i}"]`);if(c)c.innerHTML=p.recib===""?"":`<span class="${cls(dR(p))}">${fmt(dR(p))}</span>`;}
   } else return;
   const s=$("#sig"); if(s) s.disabled=!PASOS[A.paso-1].ok(A);
 });
@@ -1360,7 +1399,10 @@ function extraerXML(texto){
       fact:   cantidadTexto(g("Cantidad")),
       /* Lo facturado llega con la cantidad; lo recibido se captura en el Paso 3. */
       recib:  "",
-      real:   ""
+      real:   "",
+      /* El conteo por división (PV/BR) se captura en el Paso 4, no viene del CFDI. */
+      realPV: "",
+      realBR: ""
     };
   }).filter(p=>p.codigo || p.desc);
   /* Aviso: una partida SIN código no se puede guardar. partidaValida() exige
@@ -1453,15 +1495,17 @@ function partidasDesdeLineas(lineas){
     const codigo = limpia(m[1]), desc = limpia(m[2]);
     /* Descarta renglones que en realidad son totales o claves fiscales. */
     if(!codigo || /^\d{6,}$/.test(codigo)) return;
-    /* Se entregan los CINCO campos del esquema (ver partidaValida() en
-       firestore.rules): recib/real vacíos, para que la partida esté
-       completa aunque no pase por aplicarExtraccion(). */
+    /* Se entregan los SEIS campos del esquema (ver partidaValida() en
+       firestore.rules): los conteos por división quedan vacíos, para que la
+       partida esté completa aunque no pase por aplicarExtraccion(). */
     out.push({
       codigo: codigo.slice(0, TOPE_CODIGO),
       desc:   desc.slice(0, TOPE_DESC),
       fact:   cant,
       recib:  "",
-      real:   ""
+      real:   "",
+      realPV: "",
+      realBR: ""
     });
   });
   return out;
@@ -1586,11 +1630,12 @@ function aplicarExtraccion(){
        respaldo ClaveProdServ, así que solo se descarta si el usuario borró el
        campo a mano o la cantidad quedó en cero. */
     .filter(x=>x.codigo && aNumero(x.fact)>0)
-    /* Se completan los CINCO campos del esquema aquí y también en extraerXML():
-       partidaValida() de firestore.rules exige que existan TODOS, aunque vayan
-       vacíos. Si faltara uno solo, Firestore rechaza el documento completo.
-       `sicar` ya NO se agrega: hasOnly() lo rechazaría por sobrar. */
-    .map(x=>({codigo:x.codigo, desc:x.desc, fact:x.fact, recib:"", real:""}));
+    /* Se completan los campos de la partida aquí y también en extraerXML():
+       las reglas exigen que existan TODOS, aunque vayan vacíos. Si faltara uno
+       solo, Firestore rechaza el documento completo.
+       Los conteos por división (PV/BR) nacen vacíos: se capturan en el Paso 4.
+       `sicar` ya NO se agrega. */
+    .map(x=>({codigo:x.codigo, desc:x.desc, fact:x.fact, recib:"", real:"", realPV:"", realBR:""}));
   if(!nuevas.length) return 0;
   /* Se respeta el tope de 20 partidas que exigen las reglas de Firestore. */
   const libres = MAX_PARTIDAS - A.partidas.length;
@@ -1664,10 +1709,10 @@ function crearPDF(list,titulo){
     d.setFont("helvetica","normal"); d.setFontSize(9);
     d.text(`Recibió: ${a.encargado}    Verificó: ${a.verificador}`,M,y+13);
     d.autoTable({startY:y+20,margin:{left:M,right:M},theme:"grid",styles:{fontSize:8,cellPadding:4},headStyles:{fillColor:[31,92,122]},
-      head:[["Código","Descripción","Fact.","Recib.","Dif. recep.","Real","Resultado"]],
-      body:a.partidas.map(p=>[p.codigo,p.desc,p.fact,p.recib,fmt(dR(p)),p.real,resultado(p)]),
-      columnStyles:{2:{halign:"right"},3:{halign:"right"},4:{halign:"right"},5:{halign:"right"}},
-      didParseCell:h=>{ if(h.section==="body"&&h.row.raw[6]!=="Conforme"){h.cell.styles.fillColor=[251,234,229];} }});
+      head:[["Código","Descripción","Fact.","Recib.","Dif. recep.","Real PV","Real BR","Real total","Resultado"]],
+      body:a.partidas.map(p=>[p.codigo,p.desc,p.fact,p.recib,fmt(dR(p)),p.realPV===""?"—":p.realPV,p.realBR===""?"—":p.realBR,p.real,resultado(p)]),
+      columnStyles:{2:{halign:"right"},3:{halign:"right"},4:{halign:"right"},5:{halign:"right"},6:{halign:"right"},7:{halign:"right"}},
+      didParseCell:h=>{ if(h.section==="body"&&h.row.raw[8]!=="Conforme"){h.cell.styles.fillColor=[251,234,229];} }});
     y=d.lastAutoTable.finalY+10;
     /* Conteo por folio, con la misma regla: usar la suma solo si Dif. recep. = 0.
        Se divide en dos líneas porque el aviso supera el ancho útil de la página. */
