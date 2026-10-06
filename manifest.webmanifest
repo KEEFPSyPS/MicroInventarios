@@ -1,0 +1,58 @@
+{
+  "name": "Microinventarios",
+  "short_name": "Microinventarios",
+  "description": "Auditoría de recepción de mercancía: captura, verificación y reportes de folios.",
+  "lang": "es-MX",
+  "dir": "ltr",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "theme_color": "#1b2430",
+  "background_color": "#eceff1",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./icons/apple-touch-icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Nueva auditoría",
+      "short_name": "Nueva",
+      "description": "Empezar el conteo de un folio nuevo del día.",
+      "url": "./?accion=nueva",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Historial y reportes",
+      "short_name": "Historial",
+      "description": "Ver las auditorías guardadas y generar reportes.",
+      "url": "./?accion=historial",
+      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

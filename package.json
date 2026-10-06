@@ -1,0 +1,13 @@
+{
+  "name": "microinventarios",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PWA de auditoría de recepción de mercancía.",
+  "type": "module",
+  "scripts": {
+    "iconos": "node generar-iconos.mjs"
+  },
+  "devDependencies": {
+    "sharp": "^0.33.5"
+  }
+}

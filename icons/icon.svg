@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Microinventarios">
+  <!-- Fondo del encabezado (#1b2430 = variable ink) -->
+  <rect width="512" height="512" fill="#1b2430"/>
+  <!-- Acento (#1f5c7a): anillo decorativo -->
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#1f5c7a" stroke-width="14"/>
+  <!-- Letra M (símbolo principal) -->
+  <path fill="#ffffff" d="M150 356V156h34l72 118 72-118h34v200h-34V214l-72 116-72-116v142z"/>
+  <!-- Check de verificación -->
+  <path fill="none" stroke="#4ea8cc" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"
+        d="M300 392l30 30 62-74"/>
+</svg>
