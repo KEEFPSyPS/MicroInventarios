@@ -171,9 +171,9 @@ El workflow `.github/workflows/ci.yml` corre en **cada push y pull request**:
 
 El `VERSION` de `sw.js` **no se edita a mano**. Lo deriva el script
 `scripts/actualizar-version-sw.mjs` a partir del **contenido** del app shell
-(`index.html`, `styles.css`, `app.js`, `manifest.webmanifest` y, si existe,
-`firebase-config.js`) más el SHA corto del commit de git. El resultado tiene la forma
-`h<hash12>-<commit>`.
+(`index.html`, `styles.css`, `app.js`, `busqueda.js`, `manifest.webmanifest` y, si
+existe, `firebase-config.js`) más el SHA corto del commit de git. El resultado tiene la
+forma `h<hash12>-<commit>`.
 
 **Cómo se dispara:**
 
@@ -252,6 +252,30 @@ console.log(r.violations.length, 'violaciones'); r.violations.forEach(v=>console
 > llevan `aria-hidden="true"` (no enfocables), algo que jsdom no evalúa sin el CSS.
 
 
+## Búsqueda en el Historial
+
+La vista **Historial y reportes** incluye una **barra de búsqueda única** que filtra la
+tabla de auditorías (no afecta al reporte del día ni a su PDF). Escribe y el filtrado se
+aplica tras una pausa de ~200 ms, sin perder el foco del campo:
+
+- **Texto libre** por proveedor, folio, línea/marca, encargado o verificador. Ignora
+  mayúsculas, acentos y espacios sobrantes.
+- **Fecha** en varios formatos: `2026-10-07`, `07/10/2026`, `7/10`, `10/2026`, `octubre`,
+  `oct 2026` (también con `/`, `-` o `.` como separador).
+- **Artículos** por código/SKU, descripción y cantidades (facturado, recibido, real). Bajo
+  cada registro coincidente se listan las partidas que casaron, con el término resaltado.
+- **Varios términos** separados por espacio se combinan con **AND** (deben coincidir todos),
+  de modo que teclear más **acota** el resultado, no lo amplía. Un término numérico como
+  `12` coincide si casa como fecha **o** como texto de artículo (basta una).
+- Un **contador** (`N de M registros`) anuncia los resultados (`aria-live`), hay un botón
+  **Limpiar** y la tecla **Esc** vacía el campo. Con la caja vacía se ven todos los registros.
+
+La lógica vive en `busqueda.js` (módulo puro: `normalizarTexto`, `prepararRegistro`,
+`interpretarFecha`, `buscarRegistros`) y se prueba en `tests/busqueda.test.cjs` con
+`node:test`. El realce del texto se construye con nodos del DOM (`<mark>`, nunca
+`innerHTML` con datos del usuario), conforme a la CSP.
+
+
 ## Arquitectura
 
 ```
@@ -259,6 +283,7 @@ console.log(r.violations.length, 'violaciones'); r.violations.forEach(v=>console
 ├── index.html               Marcado: cabecera, pantallas (login/app) y contenedores PWA
 ├── styles.css               Estilos de la app (servidos como archivo estático)
 ├── app.js                   Lógica de la app (módulo ESM: importa Firebase y la config)
+├── busqueda.js              Súper buscador del Historial (módulo puro, sin DOM ni red)
 ├── pwa.js                   Script clásico: instalación, avisos iOS/offline, SW
 ├── sw.js                    Service worker: precaché del shell + estrategias por host
 ├── manifest.webmanifest     Metadatos de la PWA (iconos, atajos, colores)
@@ -270,6 +295,7 @@ console.log(r.violations.length, 'violaciones'); r.violations.forEach(v=>console
 ├── generar-iconos.mjs       Genera los PNG del manifest desde icon.svg (usa sharp)
 ├── eslint.config.js         Reglas de lint (ESLint 9 flat config)
 ├── .prettierrc.json         Formato de código (Prettier)
+├── tests/                    Pruebas unitarias (node:test), p. ej. tests/busqueda.test.cjs
 ├── verificar-pasos.cjs      Pruebas de flujo (node:test): corre app.js en un DOM virtual
 └── README-VERIFICACION.md   Verificación de cuentas, migración y despliegue
 ```

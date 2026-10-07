@@ -40,6 +40,7 @@ jobs:
       - name: Verificar sintaxis de los JS
         run: |
           node --check app.js
+          node --check busqueda.js
           node --check pwa.js
           node --check sw.js
           node --check verificar-pasos.cjs
@@ -47,6 +48,7 @@ jobs:
           node --check generar-iconos.mjs
           node --check scripts/actualizar-version-sw.mjs
           node --check tests/firestore.rules.test.cjs
+          node --check tests/busqueda.test.cjs
 
       - name: Lint (ESLint)
         run: npm run lint
