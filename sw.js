@@ -10,15 +10,23 @@
  * - Actualización controlada: si hay un SW nuevo esperando, la página muestra
  *   un aviso "Hay una versión nueva · Actualizar" y llama a skipWaiting.
  * - Sin conexión: sirve el shell en caché; la página muestra el aviso.
+ *
+ * NOTA: `VERSION` NO se edita a mano. Lo deriva del contenido del shell el
+ * script scripts/actualizar-version-sw.mjs, que corre en `predeploy` (ver
+ * firebase.json) y con `npm run build:sw`. Así, cualquier cambio en
+ * index.html/styles.css/app.js produce una versión nueva automáticamente.
  * ======================================================================== */
 
-const VERSION = "v1";
+const VERSION = "hf9e444650634-e08add3";
 const CACHE = "microinventarios-" + VERSION;
 
 /* App shell: rutas relativas para funcionar también en subcarpetas. */
 const SHELL = [
   "./",
   "./index.html",
+  "./styles.css",
+  "./app.js",
+  "./firebase-config.js",
   "./manifest.webmanifest",
   "./icons/icon.svg",
   "./icons/icon-192.png",
