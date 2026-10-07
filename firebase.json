@@ -4,10 +4,13 @@
   },
   "hosting": {
     "public": ".",
+    "predeploy": ["node scripts/actualizar-version-sw.mjs"],
     "ignore": [
       "firebase.json",
       "firestore.rules",
       "README-VERIFICACION.md",
+      "scripts/**",
+      "tests/**",
       "**/.*",
       "**/node_modules/**"
     ],
