@@ -11,13 +11,26 @@
     "public": ".",
     "predeploy": ["node scripts/actualizar-version-sw.mjs"],
     "ignore": [
-      "firebase.json",
-      "firestore.rules",
-      "README-VERIFICACION.md",
-      "scripts/**",
+      "**/node_modules/**",
       "tests/**",
+      "scripts/**",
+      ".github/**",
+      "package.json",
+      "package-lock.json",
+      "**/*.log",
+      "**/*.cjs",
+      "**/*.mjs",
+      "eslint.config.js",
+      ".prettierignore",
+      ".prettierrc.json",
+      ".editorconfig",
+      "README.md",
+      "README-VERIFICACION.md",
+      "firebase-config.example.js",
+      "firestore.rules",
+      "firebase.json",
       "**/.*",
-      "**/node_modules/**"
+      "**/.*/**"
     ],
     "headers": [
       {
