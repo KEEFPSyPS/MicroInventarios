@@ -17,7 +17,7 @@
  * index.html/styles.css/app.js produce una versión nueva automáticamente.
  * ======================================================================== */
 
-const VERSION = "hf9e444650634-e08add3";
+const VERSION = "h73bf66d41a06-f7a4c99";
 const CACHE = "microinventarios-" + VERSION;
 
 /* App shell: rutas relativas para funcionar también en subcarpetas. */
@@ -26,6 +26,7 @@ const SHELL = [
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./busqueda.js",
   "./firebase-config.js",
   "./manifest.webmanifest",
   "./icons/icon.svg",

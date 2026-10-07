@@ -140,6 +140,18 @@ main{padding-left:calc(14px + env(safe-area-inset-left));
 .msg-ok{background:var(--okbg);color:var(--ok)}
 .msg-bad{background:var(--badbg);color:var(--bad)}
 .fila-sep{background:var(--acc2);font-weight:600;font-size:13px}
+/* --- Súper buscador del Historial --- */
+.buscador{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 4px}
+.buscador-input{flex:1 1 260px;min-width:0;margin:0;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font:inherit}
+.buscador-input:focus{outline:2px solid var(--acc);outline-offset:1px}
+.buscador-cuenta{color:var(--mut);font-size:13px}
+/* Fila extra bajo un registro: qué partidas coincidieron con la búsqueda. */
+.fila-coincidencia{background:var(--acc2)}
+.coincidencia-et{color:var(--mut);font-size:12px;font-weight:600;margin-right:6px}
+.coincidencia-lista{margin:2px 0 0;padding:0;list-style:none;font-size:13px}
+.coincidencia-lista li{margin:1px 0}
+.coincidencia-cant{color:var(--mut)}
+mark{background:#fff2a8;color:inherit;padding:0 1px;border-radius:2px}
 .row-h{margin:10px 0 14px}
 .det-pdf{margin-top:8px}
 .pre-pdf{max-height:220px;overflow:auto;background:#fff;border:1px solid var(--line);padding:8px;font-size:12px;white-space:pre-wrap}

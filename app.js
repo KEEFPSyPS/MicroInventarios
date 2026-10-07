@@ -11,6 +11,9 @@ import {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,setPersist
    firebase-config.example.js y el README). Si el archivo no existe, el build
    de despliegue falla al importarlo: es intencional para no publicar sin config. */
 import {firebaseConfig} from "./firebase-config.js";
+/* Súper buscador del Historial: módulo puro (sin DOM ni red) que filtra
+   registros por proveedor, fecha y datos de artículo. Ver busqueda.js. */
+import {buscarRegistros} from "./busqueda.js";
 
 /* Si projectId queda vacío, la página guarda en este navegador (modo local). */
 const cloud = !!firebaseConfig.projectId && !!firebaseConfig.apiKey;
@@ -395,6 +398,49 @@ const $ = s=>document.querySelector(s);
 const num = v=>(v===""||v==null)?null:Number(v);
 const uid = ()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
 const esc = s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+/* Devuelve un fragmento DOM con `texto` en el que cada aparición (sin distinguir
+   mayúsculas/acentos) de alguno de los `terminos` queda envuelta en <mark>.
+   Construye los nodos con createElement/createTextNode: NUNCA usa innerHTML con
+   el texto, así que es seguro ante XSS aunque el usuario escriba "<script>". */
+function resaltarCoincidencias(texto, terminos){
+  const frag = document.createDocumentFragment();
+  const s = String(texto==null?"":texto);
+  /* Para que las posiciones del realce coincidan con la búsqueda, se comparan
+     versiones normalizadas carácter a carácter; el recorte se hace sobre el
+     texto ORIGINAL para no perder acentos ni mayúsculas al mostrarlo. */
+  const norm = t=>t.normalize("NFD").replace(/\p{Diacritic}/gu,"").toLowerCase();
+  const sNorm = norm(s);
+  const marcas = new Array(s.length).fill(false);
+  (terminos||[]).forEach(t=>{
+    const tNorm = norm(String(t||"")).replace(/\s+/g," ").trim();
+    if(!tNorm) return;
+    let desde = 0, pos;
+    while((pos = sNorm.indexOf(tNorm, desde)) !== -1){
+      for(let i=pos;i<pos+tNorm.length;i++) marcas[i]=true;
+      desde = pos + tNorm.length;
+    }
+  });
+  /* Se agrupan tramos consecutivos con el mismo estado en texto o <mark>. */
+  let i = 0;
+  while(i < s.length){
+    const marcado = marcas[i];
+    let j = i;
+    while(j < s.length && marcas[j] === marcado) j++;
+    const trozo = s.slice(i, j);
+    if(marcado){ const m=document.createElement("mark"); m.textContent=trozo; frag.appendChild(m); }
+    else frag.appendChild(document.createTextNode(trozo));
+    i = j;
+  }
+  return frag;
+}
+
+/* Debounce exclusivo del buscador del Historial (~200 ms). Guarda el temporizador
+   para que solo la última tecla programe el filtrado. */
+let _tHist = null;
+function debounceHist(fn){
+  clearTimeout(_tHist);
+  _tHist = setTimeout(fn, 200);
+}
 const hoy = ()=>{const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)};
 /* Cada partida guarda los datos de identidad/cantidad (codigo, desc, fact, recib)
    y, desde el Paso 4, el conteo en anaquel SEPARADO por división:
@@ -1004,37 +1050,117 @@ async function renderHist(){
      que hay que retomar, y antes se perdía entre los registros completos. */
   const enCaptura = list.filter(a=>!completa(a));
   const terminadas = list.filter(a=>completa(a));
-  const filasDe = arr=>arr.map(a=>{
+  const filasDe = (arr, mapaPartidas)=>arr.map(a=>{
     /* Cada fila se pincha a sí misma: un documento antiguo con un campo
        faltante solo afecta su propia fila, no toda la tabla. */
+    let html;
     try{
       const r=resumen([a]);
-      return `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}${completa(a)?"":`<span class="avance">En captura · Paso ${Math.min(ULTIMO,Math.max(1,num(a.paso)||1))}</span>`}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"—"}</td><td class="row"><button class="btn ${completa(a)?"sec":""}" data-open="${esc(a.id)}">${completa(a)?"Abrir":"Reanudar"}</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
+      html = `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}${completa(a)?"":`<span class="avance">En captura · Paso ${Math.min(ULTIMO,Math.max(1,num(a.paso)||1))}</span>`}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"—"}</td><td class="row"><button class="btn ${completa(a)?"sec":""}" data-open="${esc(a.id)}">${completa(a)?"Abrir":"Reanudar"}</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
     }catch(e){
-      return `<tr><td colspan="6">Registro con datos incompletos (id ${esc(a&&a.id)}). Ábrelo para corregirlo o elíminalo.</td></tr>`;
+      html = `<tr><td colspan="6">Registro con datos incompletos (id ${esc(a&&a.id)}). Ábrelo para corregirlo o elíminalo.</td></tr>`;
     }
+    /* Fila extra SOLO si el filtro marcó partidas concretas de este registro. */
+    const marcadas = mapaPartidas && mapaPartidas.get(a.id);
+    if(marcadas && marcadas.length){
+      html += `<tr class="fila-coincidencia"><td colspan="6"><span class="coincidencia-et">Coincide en:</span><ul class="coincidencia-lista" data-match="${esc(a.id)}"></ul></td></tr>`;
+    }
+    return html;
   }).join("");
   /* Etiqueta que da contexto al renglón: en la tabla plana anterior no se sabía
      si un hallazgo "0" era un conteo o una auditoría sin terminar. */
   const separador = t=>`<tr><td colspan="6" class="fila-sep">${t}</td></tr>`;
-  const cuerpo = (enCaptura.length||terminadas.length)
-    ? (enCaptura.length?separador(`En captura — retómalas donde las dejaste (${enCaptura.length})`)+filasDe(enCaptura):"")
-      + (terminadas.length?separador(`Terminadas (${terminadas.length})`)+filasDe(terminadas):"")
-    : `<tr><td colspan="6">Aún no hay auditorías. Empieza una desde “Auditoría del día”.</td></tr>`;
+  /* Arma el conjunto de filas (con o sin filtro). `filtrado` es el resultado de
+     buscarRegistros(): [{registro, partidas}]. Devuelve el HTML del tbody y un
+     mapa id→[índices] con las partidas que coincidieron (para la fila extra). */
+  const cuerpoDe = filtrado=>{
+    const enFiltro = new Set(filtrado.map(x=>x.registro));
+    const captura = enCaptura.filter(a=>enFiltro.has(a));
+    const term = terminadas.filter(a=>enFiltro.has(a));
+    if(!filtrado.length){
+      return {html:`<tr><td colspan="6">Ningún registro coincide con la búsqueda. Prueba con otra palabra, otro día o borra el texto.</td></tr>`, mapa:new Map()};
+    }
+    const mapa = new Map();
+    filtrado.forEach(x=>{ if(x.partidas && x.partidas.length) mapa.set(x.registro.id, x.partidas); });
+    const html = (captura.length?separador(`En captura — retómalas donde las dejaste (${captura.length})`)+filasDe(captura, mapa):"")
+      + (term.length?separador(`Terminadas (${term.length})`)+filasDe(term, mapa):"");
+    return {html: html || `<tr><td colspan="6">Aún no hay auditorías. Empieza una desde “Auditoría del día”.</td></tr>`, mapa};
+  };
   $("#app").innerHTML = `<div class="card"><h2>Historial y reportes</h2>
     <p class="hint mb-10">Puedes trabajar en varios folios a la vez: deja uno a medias,
     empieza el siguiente y vuelve después con <strong>Reanudar</strong>. Cada avance de paso se guarda solo.</p>
     <div class="row row-h"><label>Reporte del día<input type="date" id="dia" value="${hoy()}"></label><button class="btn" id="pdfDia">Descargar PDF del día</button><button class="btn sec" id="nuevaDesdeHist">Empezar auditoría nueva</button></div>
+    <div class="buscador">
+      <label class="sr" for="buscarHist">Buscar en el historial</label>
+      <input type="search" id="buscarHist" class="buscador-input" placeholder="Buscar por proveedor, folio, fecha o artículo…" autocomplete="off" aria-describedby="buscarCuenta">
+      <button type="button" class="btn sec" id="limpiarHist" hidden>Limpiar</button>
+      <span id="buscarCuenta" class="buscador-cuenta" role="status" aria-live="polite" aria-atomic="true"></span>
+    </div>
     <p class="hint mb-10">Al abrir una auditoría puedes capturar el folio <strong>a mano</strong> o cargar el <strong>XML/PDF</strong> de la factura.</p>
-    <div class="tw"><table><caption class="sr">Historial de auditorías</caption><tr><th scope="col">Fecha</th><th scope="col">Línea</th><th scope="col">Folio</th><th scope="col">Proveedor</th><th scope="col" class="n">Hallazgos</th><th scope="col"><span class="sr">Acciones</span></th></tr>
-    ${cuerpo}
+    <div class="tw"><table><caption class="sr">Historial de auditorías</caption><thead><tr><th scope="col">Fecha</th><th scope="col">Línea</th><th scope="col">Folio</th><th scope="col">Proveedor</th><th scope="col" class="n">Hallazgos</th><th scope="col"><span class="sr">Acciones</span></th></tr></thead>
+    <tbody id="histCuerpo"></tbody>
     </table></div></div>${msg?`<div class="msg">${esc(msg)}</div>`:""}`;
+  /* Repinta SOLO el cuerpo de la tabla y el contador. Así el input no pierde el
+     foco mientras el usuario escribe (no se reconstruye toda la tarjeta). */
+  const pintarCuerpo = texto=>{
+    const filtrado = buscarRegistros(list, texto);
+    const {html, mapa} = cuerpoDe(filtrado);
+    /* Los términos (ya normalizados) se usan para realzar con <mark>. */
+    const terminos = String(texto||"").split(/\s+/).filter(Boolean);
+    const tbody = document.getElementById("histCuerpo");
+    if(tbody) tbody.innerHTML = html;
+    /* La fila extra de partidas NO lleva texto del usuario en innerHTML: los
+       nodos se arman aquí con textContent/<mark> (resaltarCoincidencias). */
+    if(tbody) tbody.querySelectorAll("ul[data-match]").forEach(ul=>{
+      const idxs = mapa.get(ul.dataset.match) || [];
+      const reg = list.find(x=>x.id===ul.dataset.match);
+      if(!reg) return;
+      idxs.forEach(i=>{
+        const p = (reg.partidas||[])[i]; if(!p) return;
+        const li = document.createElement("li");
+        const cod = document.createElement("strong");
+        cod.appendChild(resaltarCoincidencias(p.codigo||"", terminos));
+        if(p.codigo) cod.appendChild(document.createTextNode(" · "));
+        li.appendChild(cod);
+        li.appendChild(resaltarCoincidencias(p.desc||"", terminos));
+        if(p.fact !== "" && p.fact != null){
+          const cant = document.createElement("span");
+          cant.className = "coincidencia-cant";
+          cant.appendChild(document.createTextNode(" (fact. "));
+          cant.appendChild(resaltarCoincidencias(p.fact, terminos));
+          cant.appendChild(document.createTextNode(")"));
+          li.appendChild(cant);
+        }
+        ul.appendChild(li);
+      });
+    });
+    const cuenta = document.getElementById("buscarCuenta");
+    if(cuenta){
+      cuenta.textContent = texto
+        ? `${filtrado.length} de ${list.length} registro${list.length===1?"":"s"}`
+        : "";
+    }
+    const btn = document.getElementById("limpiarHist");
+    if(btn) btn.hidden = !texto;
+  };
+  /* Estado inicial (sin filtro): se pinta todo el cuerpo una vez. */
+  pintarCuerpo("");
+  /* Al pintar de cero, el input arranca vacío; se enfoca para operar con teclado. */
+  window._histLista = list;
+  window._histPintar = pintarCuerpo;
   window._list = list; msg="";
 }
 
 /* ===== Eventos ===== */
 document.addEventListener("input",e=>{
   const t=e.target;
+  /* --- Súper buscador del Historial --- */
+  if(t.id==="buscarHist"){
+    /* Debounce ~200 ms: no filtra en cada tecla sino cuando el usuario pausa,
+       y solo repinta el cuerpo de la tabla (el input conserva el foco). */
+    debounceHist(()=>{ if(window._histPintar) window._histPintar(t.value); });
+    return;
+  }
   if(t.dataset.f){ A[t.dataset.f]=t.value; }
   else if(t.dataset.k){
     A.partidas[+t.dataset.i][t.dataset.k]=t.value;
@@ -1152,6 +1278,24 @@ document.addEventListener("change", async e=>{
   }
 });
 
+/* El botón "Limpiar" del buscador del Historial: borra el texto, repinta y
+   devuelve el foco al campo. Va en su propio listener (síncrono) para no entrar
+   en la cadena async del listener de acciones, que hace `return` con mensajes. */
+document.addEventListener("click",e=>{
+  const b=e.target.closest("#limpiarHist"); if(!b) return;
+  const inp=document.getElementById("buscarHist");
+  if(inp){ inp.value=""; inp.focus(); }
+  if(window._histPintar) window._histPintar("");
+});
+/* Esc dentro del buscador: limpia el texto sin salir de la vista (Gestalt de
+   "escapar cancela la búsqueda"). */
+document.addEventListener("keydown",e=>{
+  if(e.key!=="Escape") return;
+  const inp=e.target && e.target.id==="buscarHist" ? e.target : null;
+  if(!inp || !inp.value) return;
+  inp.value="";
+  if(window._histPintar) window._histPintar("");
+});
 document.addEventListener("click",async e=>{
   const b=e.target.closest("button"); if(!b) return;
   try{

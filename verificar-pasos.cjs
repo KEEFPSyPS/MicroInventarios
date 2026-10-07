@@ -36,6 +36,10 @@ code = "const initializeApp=()=>({}),getFirestore=()=>({}),collection=()=>({}),d
   "getAuth=()=>({}),signInWithEmailAndPassword=()=>Promise.resolve(),signOut=()=>Promise.resolve()," +
   "onAuthStateChanged=()=>{},setPersistence=()=>Promise.resolve(),browserLocalPersistence={},browserSessionPersistence={}," +
   "sendEmailVerification=()=>Promise.resolve();\n" +
+  /* Stub del súper buscador (busqueda.js): app.js importa `buscarRegistros`.
+     Los tests de flujo no abren el Historial, pero se define para que el vm
+     nunca falle por una referencia ausente. Devuelve todos los registros. */
+  "const buscarRegistros=(registros)=>((registros||[]).map(registro=>({registro,partidas:[]})));\n" +
   /* La config REAL no se versiona (firebase-config.js está en .gitignore). Se
      inyecta un fixture equivalente para reproducir el modo nube (cloud === true)
      sin depender de un archivo ausente en CI. */
