@@ -72,9 +72,8 @@ jobs:
   #    Secretos necesarios (Settings → Secrets and variables → Actions):
   #      - FIREBASE_SERVICE_ACCOUNT  : JSON completo de una cuenta de servicio
   #                                    (recomendado: Workload Identity Federation).
-  #      - FIREBASE_CONFIG_JS        : contenido COMPLETO del archivo
-  #                                    firebase-config.js (no versionado).
   #    Alternativa con token clásico: FIREBASE_TOKEN (firebase login:ci).
+  #    No se necesita ningún secreto para firebase-config.js: está versionado.
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy a Firebase Hosting (opcional)
@@ -93,11 +92,6 @@ jobs:
 
       - name: Instalar dependencias (npm ci)
         run: npm ci
-
-      - name: Reconstruir firebase-config.js desde el secreto
-        # Escribe el archivo (en .gitignore) con el contenido del secreto, sin
-        # imprimirlo en los logs.
-        run: printf '%s' "${{ secrets.FIREBASE_CONFIG_JS }}" > firebase-config.js
 
       - name: Desplegar a Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0

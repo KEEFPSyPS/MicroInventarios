@@ -68,10 +68,12 @@ emulador). El service worker funciona en `localhost` aunque no haya HTTPS.
 
 ## Configuración de Firebase (y por qué la apiKey es pública)
 
-La configuración del proyecto vive en un archivo separado que **no se versiona**:
+La configuración del proyecto vive en `firebase-config.js`, que **SÍ se versiona**
+(lo sirve tal cual GitHub Pages y Firebase Hosting). Se creó a partir de la plantilla
+`firebase-config.example.js`:
 
 ```bash
-# 1) Copia la plantilla
+# 1) Copia la plantilla (solo la primera vez)
 Copy-Item firebase-config.example.js firebase-config.js   # PowerShell
 # cp firebase-config.example.js firebase-config.js        # bash
 
@@ -79,21 +81,27 @@ Copy-Item firebase-config.example.js firebase-config.js   # PowerShell
 #    Firebase Console → Configuración del proyecto → Tus apps → SDK setup.
 ```
 
-`firebase-config.js` está en `.gitignore`. Cada entorno (dev/prod) usa su propio archivo.
+> **¿Por qué se versiona?** GitHub Pages **solo publica lo que está en el repositorio**.
+> Si `firebase-config.js` estuviera en `.gitignore`, la app desplegada en Pages recibiría
+> un **404** al importarlo (`app.js` lo carga con
+> `import {firebaseConfig} from "./firebase-config.js"`) y rompería. Por eso el archivo
+> real entra al repo junto con `firebase-config.example.js` (que se conserva como
+> referencia de la forma del objeto).
 
-### ¿No es inseguro exponer la apiKey en el navegador?
+### ¿No es inseguro versionar/exponer la apiKey en el navegador?
 
 **No.** La `apiKey` web de Firebase es un **identificador público**, no un secreto:
-viaja en el HTML de cualquier app web de Firebase y es visible en DevTools por diseño.
-Lo que realmente protege los datos es:
+se inyecta en el contenido de cualquier app web de Firebase, así que **siempre** es
+visible en DevTools. Versionarla no añade riesgo: el archivo ya viaja al navegador de
+cada visitante. Lo que realmente protege los datos es:
 
 - **`firestore.rules`** — deniega todo por defecto y exige usuario **autenticado con
   correo verificado**; solo el dueño puede editar/borrar su auditoría.
 - **Restricciones de la apiKey** en Google Cloud (HTTP referrers) y los **dominios
   autorizados** de Authentication.
 
-Aun así, la config se aísla en su propio archivo para no versionar ajustes por entorno y
-evitar falsos positivos de escáneres de "credenciales" en los diffs.
+En pocas palabras: la seguridad la dan **las reglas de Firestore y las restricciones de
+la apiKey**, no el ocultamiento del archivo. Por eso se versiona con tranquilidad.
 
 ## Cómo desplegar
 
@@ -109,41 +117,30 @@ firebase deploy --only hosting
 firebase deploy --only firestore:rules
 ```
 
-`firebase.json` sirve el **directorio raíz** (`.`) como sitio estático. **Importante:**
-`firebase-config.js` debe existir en el equipo que despliega (no está en git). Como
-`index.html` lo importa con `import {firebaseConfig} from "./firebase-config.js"`, si el
-archivo falta el despliegue publica un sitio que **rompe en el navegador** (404 del
-módulo). El `ignore` actual de `firebase.json` **no** lo excluye del Hosting, así que se
-sube como parte del sitio.
+`firebase.json` sirve el **directorio raíz** (`.`) como sitio estático. Como
+`firebase-config.js` está **versionado**, existe en cualquier checkout: no hace falta
+generarlo antes de desplegar. `index.html` lo importa con
+`import {firebaseConfig} from "./firebase-config.js"`; el `ignore` actual de
+`firebase.json` **no** lo excluye del Hosting, así que se sube como parte del sitio (igual
+que en GitHub Pages).
 
 ### Cómo se provee `firebase-config.js` en CI / deploy
 
-Como el archivo está en `.gitignore`, en un pipeline hay que **generarlo antes de
-desplegar**. Opciones (de más simple a más robusta):
+**Ya no hay que generarlo.** Al estar versionado, viene con el `git checkout` del
+pipeline y con cualquier clon local. Basta con desplegar:
 
-1. **Desde un secret del CI** (recomendado). En GitHub Actions, guarda el contenido del
-   archivo completo en un secret (p. ej. `FIREBASE_CONFIG_JS`) y reconstrúyelo antes de
-   `firebase deploy`:
+```yaml
+- name: Desplegar
+  run: npx firebase-tools deploy --only hosting
+```
 
-   ```yaml
-   - name: Crear firebase-config.js
-     run: printf '%s' "${{ secrets.FIREBASE_CONFIG_JS }}" > firebase-config.js
-   - name: Desplegar
-     run: npx firebase-tools deploy --only hosting
-   ```
-
-   Así la config nunca está en el repo ni en los logs (el secret se enmascara).
-
-2. **Desde variables de entorno individuales**. Guarda cada campo como secret
-   (`FB_API_KEY`, `FB_PROJECT_ID`, …) y genera el archivo con un pequeño script
-   (`node scripts/crear-config.mjs`) que lea `process.env`.
-
-3. **En tu máquina (deploy manual)**. Mantén `firebase-config.js` local (ya está en
-   `.gitignore`) y despliega desde ahí con `firebase deploy`.
+No se necesitan secretos para la configuración web de Firebase (ver arriba por qué la
+`apiKey` es pública). El único secreto que puede requerir el despliegue es la
+autenticación con Firebase (`FIREBASE_SERVICE_ACCOUNT` o `FIREBASE_TOKEN`).
 
 > **Verificación previa al deploy:** `node --check firebase-config.js` (o intentar
-> importarlo) falla con un error claro si el archivo falta o está mal formado, evitando
-> publicar un sitio sin configuración.
+> importarlo) falla con un error claro si el archivo está mal formado, evitando publicar
+> un sitio sin configuración.
 
 ## Integración continua (GitHub Actions)
 
@@ -163,13 +160,12 @@ El workflow `.github/workflows/ci.yml` corre en **cada push y pull request**:
 **Job de despliegue (incluido pero desactivado):** el job `deploy` está en el YAML con
 `if: false` para que no se ejecute por accidente. Para activarlo:
 1. Cámbialo a `if: github.ref == 'refs/heads/main'`.
-2. Define los secretos en *Settings → Secrets and variables → Actions*:
+2. Define el secreto de autenticación en *Settings → Secrets and variables → Actions*:
    - `FIREBASE_SERVICE_ACCOUNT` — JSON de una cuenta de servicio (recomendado usar
      **Workload Identity Federation** en lugar de un token de larga vida).
      Alternativa clásica: `FIREBASE_TOKEN` (de `firebase login:ci`).
-   - `FIREBASE_CONFIG_JS` — contenido **completo** de `firebase-config.js`.
-3. El job **reconstruye** `firebase-config.js` desde el secreto antes de desplegar (nunca
-   se imprime en los logs) y luego usa `FirebaseExtended/action-hosting-deploy`.
+3. El job **no** necesita reconstruir `firebase-config.js` (está versionado); solo usa
+   `FirebaseExtended/action-hosting-deploy`.
 
 ## Versionado automático del Service Worker
 
@@ -266,7 +262,7 @@ console.log(r.violations.length, 'violaciones'); r.violations.forEach(v=>console
 ├── pwa.js                   Script clásico: instalación, avisos iOS/offline, SW
 ├── sw.js                    Service worker: precaché del shell + estrategias por host
 ├── manifest.webmanifest     Metadatos de la PWA (iconos, atajos, colores)
-├── firebase-config.js       Config REAL de Firebase (en .gitignore)
+├── firebase-config.js       Config REAL de Firebase (versionada; apiKey pública)
 ├── firebase-config.example.js  Plantilla versionada
 ├── firestore.rules          Reglas de seguridad de Firestore (denegar por defecto)
 ├── firebase.json            Config de Hosting + Firestore + headers
