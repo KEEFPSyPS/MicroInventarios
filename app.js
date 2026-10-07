@@ -1260,8 +1260,11 @@ document.addEventListener("change", async e=>{
        (y no del número impreso en el papel) o si la fecha es la de emisión y no
        la de recepción, el usuario debe verlo antes de seguir capturando. */
     const detalles = [];
-    if(aplicados.includes("folio") && cab.folioOrigen) detalles.push(`el folio salió de «${cab.folioOrigen}»`);
-    if(aplicados.includes("fecha") && cab.fecha) detalles.push(`la fecha (${cab.fecha}) es la de emisión del CFDI: cámbiala si la mercancía llegó otro día`);
+    /* cab.folioOrigen y cab.fecha vienen del CFDI (archivo del usuario) y este
+       texto se inserta con insertAdjacentHTML más abajo: se escapan aquí para
+       no inyectar HTML desde el archivo cargado. */
+    if(aplicados.includes("folio") && cab.folioOrigen) detalles.push(`el folio salió de «${esc(cab.folioOrigen)}»`);
+    if(aplicados.includes("fecha") && cab.fecha) detalles.push(`la fecha (${esc(cab.fecha)}) es la de emisión del CFDI: cámbiala si la mercancía llegó otro día`);
     if(aplicados.length){
       const c2 = document.getElementById("facturaMsg");
       if(c2) c2.insertAdjacentHTML("afterbegin",
