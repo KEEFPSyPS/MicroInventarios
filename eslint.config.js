@@ -12,9 +12,9 @@ export default [
   // 2) Reglas base recomendadas por ESLint.
   js.configs.recommended,
 
-  // 3) App en el navegador (app.js, pwa.js, sw.js): módulos ES con APIs del DOM.
+  // 3) App en el navegador (app.js, busqueda.js, pwa.js, sw.js): módulos ES con APIs del DOM.
   {
-    files: ["app.js", "pwa.js", "sw.js"],
+    files: ["app.js", "busqueda.js", "pwa.js", "sw.js"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
