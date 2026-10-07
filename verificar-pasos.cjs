@@ -1,33 +1,45 @@
-/* Test de flujo: ejecuta el script REAL de index.html en un DOM mínimo dentro de
-   un contexto vm, y verifica el rediseño a CINCO pasos (sin Paso 5 "Existencia
-   en SICAR") y que el PDF sale sin las columnas SICAR / "Dif. sistema".
-
-   Dos trampas del entorno que este archivo evita a propósito:
-   1) Los nodos del DOM se crean en el reino del test y se exponen al vm. Como
-      los getters/funciones del reino del test se compilan en los scripts
-      principales (no ven `nodos`, que vive en el buffer del módulo), TODA
-      lectura/escritura del DOM debe pasar por la variable `nodo` creada DENTRO
-      del contexto vm; si el test llama a `documento.getElementById` desde aquí
-      obtendría otro nodo y leería siempre vacío.
-   2) `const`/`let` del script no se adjuntan al objeto global del vm: las
-      funciones y el estado se recogen con una expresión evaluada en el contexto. */
+/* ===========================================================================
+ * verificar-pasos.cjs — Pruebas de flujo de Microinventarios (node:test).
+ * ---------------------------------------------------------------------------
+ * Ejecuta el script REAL de app.js en un DOM mínimo dentro de un contexto vm y
+ * verifica el flujo a CINCO pasos (sin Paso 5 "Existencia en SICAR") y que el
+ * PDF sale sin las columnas SICAR / "Dif. sistema".
+ *
+ * Corre con:   node --test         (o `npm test`)
+ *
+ * Dos trampas del entorno que este archivo evita a propósito:
+ *   1) Los nodos del DOM se crean en el reino del test y se exponen al vm. Como
+ *      los getters/funciones del reino del test se compilan en los scripts
+ *      principales (no ven `nodos`, que vive en el buffer del módulo), TODA
+ *      lectura/escritura del DOM debe pasar por la variable `nodo` creada DENTRO
+ *      del contexto vm; si el test llama a `documento.getElementById` desde aquí
+ *      obtendría otro nodo y leería siempre vacío.
+ *   2) `const`/`let` del script no se adjuntan al objeto global del vm: las
+ *      funciones y el estado se recogen con una expresión evaluada en el contexto.
+ *
+ * El código de la app vive en app.js (módulo ES); aquí se importa tal cual, se
+ * quitan sus `import` y se sustituyen por stubs (Firebase y la config del test). */
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
 const fs = require("fs");
 const vm = require("vm");
 
-let fails = 0;
-const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) fails++; };
+/* Alias histórico `ok` → aserción estricta. Se mantiene para no reescribir cada
+   llamada y porque su mensaje es el mismo que se imprime en el reporte. */
+const ok = (c, m) => assert.ok(c, m);
 
-const html = fs.readFileSync("index.html", "utf8");
-const i = html.indexOf('<script type="module">');
-const j = html.lastIndexOf("</script>");
-let code = html.slice(i + '<script type="module">'.length, j);
+let code = fs.readFileSync("app.js", "utf8");
 const imports = [...code.matchAll(/^import[^;]+;$/gm)].map(m => m[0]);
 imports.forEach(s => { code = code.replace(s, ""); });
 code = "const initializeApp=()=>({}),getFirestore=()=>({}),collection=()=>({}),doc=()=>({})," +
   "setDoc=()=>Promise.resolve(),getDocs=()=>Promise.resolve({docs:[]}),deleteDoc=()=>Promise.resolve()," +
   "getAuth=()=>({}),signInWithEmailAndPassword=()=>Promise.resolve(),signOut=()=>Promise.resolve()," +
   "onAuthStateChanged=()=>{},setPersistence=()=>Promise.resolve(),browserLocalPersistence={},browserSessionPersistence={}," +
-  "sendEmailVerification=()=>Promise.resolve();\n" + code;
+  "sendEmailVerification=()=>Promise.resolve();\n" +
+  /* La config REAL no se versiona (firebase-config.js está en .gitignore). Se
+     inyecta un fixture equivalente para reproducir el modo nube (cloud === true)
+     sin depender de un archivo ausente en CI. */
+  "const firebaseConfig={apiKey:'AIzaSyTEST',projectId:'microinventarios-test'};\n" + code;
 
 /* --- Nodos del DOM (un solo objeto por id, con innerHTML capturado) --- */
 const nodos = {};
@@ -117,7 +129,8 @@ vm.runInContext([
 const app = sandbox.app;
 const A = app.A;
 
-ok(app.cloud === true, "la app arrancó en modo nube (con el HTML real de config)");
+test("arranque y modelo de pasos (PV/BR, sin SICAR)", () => {
+ok(app.cloud === true, "la app arrancó en modo nube (con la config del test)");
 ok(typeof app.texto() === "string", "el DOM mínimo responde al render (largo " + app.texto().length + ")");
 
 /* --- Captura completa en 5 pasos, sin capturar nunca "sicar" --- */
@@ -274,7 +287,9 @@ vm.runInContext([
   "};"
 ].join("\n"), sandbox);
 
-(async () => {
+});
+
+test("navegación por clics, guardado local y autoguardado", async () => {
   const termino = await sandbox.__ir();
   ok(termino === 5, "el avance por clics llegó al paso " + termino + " (pasos: " + sandbox.__pasos.join(",") + ")");
   ok(A.paso === 5 && app.completa(A), "tras avanzar, el documento está completo en el paso 5");
@@ -334,7 +349,4 @@ vm.runInContext([
   ok(autoRes.aSalvo === true, "tras el autoguardado el avance queda a salvo (huella == respaldo)");
   ok(autoRes.aviso === "", "con el avance guardable el aviso ya no alarma ('se perderá el folio')");
   ok(/Guardado/.test(autoRes.indicador), "el indicador muestra 'Guardado' tras el autoguardado");
-})().then(() => {
-  console.log(fails ? "\n" + fails + " FALLO(S)" : "\nTODO OK (0 fallos)");
-  process.exit(fails ? 1 : 0);
 });

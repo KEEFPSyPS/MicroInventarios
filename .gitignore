@@ -1,0 +1,43 @@
+﻿# ===== Dependencias =====
+node_modules/
+
+# ===== Firebase =====
+.firebase/
+.firebaserc
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+firebase-debug.*.log
+
+# ===== Configuracion local (NO versionar) =====
+# Config real de Firebase (ver firebase-config.example.js). La apiKey web es
+# publica por diseno, pero no conviene versionar configuraciones por entorno.
+firebase-config.js
+
+# ===== Variables de entorno =====
+.env
+.env.*
+*.local
+
+# ===== Herramientas / pruebas =====
+coverage/
+*.tsbuildinfo
+.eslintcache
+
+# ===== Sistema operativo =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== Editores =====
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+
+# ===== Logs =====
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

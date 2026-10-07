@@ -14,7 +14,6 @@
 
   /* ---------- almacenamiento con try/catch ---------- */
   function lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
-  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
   function lsDel(k) { try { localStorage.removeItem(k); } catch (_) {} }
   function ssGet(k) { try { return sessionStorage.getItem(k); } catch (_) { return null; } }
   function ssSet(k, v) { try { sessionStorage.setItem(k, v); } catch (_) {} }
@@ -78,7 +77,6 @@
    * 2) Detección de "app instalada"
    * ==================================================================== */
   var MEDIA_MODOS = ["standalone", "fullscreen", "minimal-ui", "window-controls-overlay"];
-  var appInstalada = false;
 
   function enModoApp() {
     if (window.matchMedia) {
@@ -92,14 +90,13 @@
   }
 
   function marcarInstalada() {
-    appInstalada = true;
     ocultarBoton();
     if (iosDlg && iosDlg.open && typeof iosDlg.close === "function") iosDlg.close();
   }
 
   function evaluarInstalacion() {
     if (enModoApp()) { marcarInstalada(); return true; }
-    if (lsGet(LS_INSTALADA) === "1") { appInstalada = true; ocultarBoton(); return true; }
+    if (lsGet(LS_INSTALADA) === "1") { ocultarBoton(); return true; }
     return false;
   }
 
@@ -130,7 +127,6 @@
     // El evento es la FUENTE DE VERDAD: si vuelve a dispararse, el usuario
     // puede instalar; borramos cualquier indicador viejo que lo bloqueara.
     lsDel(LS_INSTALADA);
-    appInstalada = false;
 
     e.preventDefault();
     deferredPrompt = e;

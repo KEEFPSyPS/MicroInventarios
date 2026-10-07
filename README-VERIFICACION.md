@@ -180,11 +180,12 @@ Así el conteo sobrevive incluso cuando la escritura remota no llegó a confirma
 
 ## Prueba automatizada del flujo
 
-`verificar-pasos.cjs` ejecuta el script real de `index.html` dentro de un DOM
-mínimo (sin navegador) y comprueba el rediseño de cinco pasos:
+`verificar-pasos.cjs` ejecuta el código real de `app.js` dentro de un DOM mínimo
+(sin navegador) usando el runner integrado `node:test`, y comprueba el rediseño de
+cinco pasos:
 
 ```bash
-node verificar-pasos.cjs
+npm test               # equivale a: node --test verificar-pasos.cjs
 ```
 
 Cubre: número y títulos de los pasos, captura completa sin `sicar`, el conteo en

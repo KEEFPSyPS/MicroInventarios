@@ -1,0 +1,17 @@
+# Dependencias y artefactos
+node_modules/
+package-lock.json
+firebase-config.js
+icons/
+*.min.js
+*.png
+
+# Código existente con estilo propio (compacto). NO se reformatea con Prettier para
+# no generar un diff masivo: se aplica solo a archivos nuevos (tests, CI, scripts).
+app.js
+pwa.js
+sw.js
+styles.css
+index.html
+verificar-pasos.cjs
+generar-iconos.mjs

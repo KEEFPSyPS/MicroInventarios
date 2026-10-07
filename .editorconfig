@@ -1,0 +1,27 @@
+# EditorConfig — https://editorconfig.org
+# Mantiene un estilo de codificación consistente entre editores y equipos.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# El HTML/CSS/JS de la app usa 2 espacios (coincide con el código actual).
+[*.{html,css,js,mjs,cjs,json,webmanifest,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# El archivo de reglas de Firestore y los documentos Markdown.
+[*.{rules,md}]
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Windows/PowerShell no se versiona como código, pero por si acaso.
+[*.ps1]
+indent_style = space
+indent_size = 4
