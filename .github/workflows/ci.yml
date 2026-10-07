@@ -1,0 +1,111 @@
+name: CI
+
+# Se ejecuta en cada push y en cada pull request hacia cualquier rama.
+on:
+  push:
+  pull_request:
+
+# Cancela ejecuciones anteriores del mismo ref si llega una nueva (ahorra minutos).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) Calidad: verificación de sintaxis, lint y pruebas de flujo.
+  #    No necesita secretos: las pruebas inyectan una config de Firebase ficticia
+  #    (ver verificar-pasos.cjs), así que corre en forks y PRs sin credenciales.
+  # ---------------------------------------------------------------------------
+  calidad:
+    name: Lint y pruebas (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # El mínimo declarado en package.json (engines) y el LTS actual.
+        node: ["20", "22"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Instalar dependencias (npm ci)
+        run: npm ci
+
+      - name: Verificar sintaxis de los JS
+        run: |
+          node --check app.js
+          node --check pwa.js
+          node --check sw.js
+          node --check verificar-pasos.cjs
+          node --check eslint.config.js
+          node --check generar-iconos.mjs
+          node --check scripts/actualizar-version-sw.mjs
+          node --check tests/firestore.rules.test.cjs
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Pruebas de flujo (node:test)
+        run: npm test
+
+      - name: Configurar Java (lo requiere el emulador de Firestore; ≥21)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Pruebas de reglas de Firestore (emulador)
+        run: npm run test:rules
+
+  # ---------------------------------------------------------------------------
+  # 2) Despliegue a Firebase Hosting (OPCIONAL, desactivado por defecto).
+  #    Para activarlo: quita el `if: false`, define el/los secretos y, si quieres,
+  #    limita a la rama principal con:
+  #        if: github.ref == 'refs/heads/main'
+  #
+  #    Secretos necesarios (Settings → Secrets and variables → Actions):
+  #      - FIREBASE_SERVICE_ACCOUNT  : JSON completo de una cuenta de servicio
+  #                                    (recomendado: Workload Identity Federation).
+  #      - FIREBASE_CONFIG_JS        : contenido COMPLETO del archivo
+  #                                    firebase-config.js (no versionado).
+  #    Alternativa con token clásico: FIREBASE_TOKEN (firebase login:ci).
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy a Firebase Hosting (opcional)
+    needs: calidad
+    if: false # 👈 cámbialo a `github.ref == 'refs/heads/main'` cuando lo actives
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Instalar dependencias (npm ci)
+        run: npm ci
+
+      - name: Reconstruir firebase-config.js desde el secreto
+        # Escribe el archivo (en .gitignore) con el contenido del secreto, sin
+        # imprimirlo en los logs.
+        run: printf '%s' "${{ secrets.FIREBASE_CONFIG_JS }}" > firebase-config.js
+
+      - name: Desplegar a Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          # Opción A (recomendada): Workload Identity / cuenta de servicio.
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          # Opción B (clásica): token de `firebase login:ci`.
+          # firebaseToken: ${{ secrets.FIREBASE_TOKEN }}
+          projectId: microinventarios-a7998
+          channelId: live
