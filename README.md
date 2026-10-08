@@ -61,12 +61,19 @@ Reglas del lote, pensadas para que un archivo malo **nunca** tumbe al resto:
   no se aborta el lote: se omite y se informa en un resumen (región `aria-live` del Paso 1).
 - **Sin partidas → no se guarda.** Un XML que no trae conceptos se omite por completo (no
   crea una auditoría vacía).
-- **Duplicados.** Se detecta la factura repetida por su **clave**: el **UUID** del timbre
-  fiscal (`TimbreFiscalDigital`) si viene; y si no, `proveedor·folio` en minúsculas. El
-  cotejo es **dentro del lote actual**: si dos XML del mismo lote comparten clave, el
-  segundo se omite como *repetida* (evita contar dos veces el ajuste de inventario). No es
-  un candado contra folios de otro día: para eso está el **aviso de folio ya capturado** que
-  aparece al leer un archivo cuando ya existe una auditoría con ese folio.
+- **Duplicados.** Se detecta la factura repetida en dos frentes:
+  - **Dentro del lote.** Por **clave** de factura: el **UUID** del timbre fiscal
+    (`TimbreFiscalDigital`) si el CFDI lo trae; y si no, `proveedor·folio` en minúsculas. Si
+    dos XML del mismo lote comparten clave, el segundo se omite como *repetida*.
+  - **Contra lo ya guardado.** Al empezar el lote se lee **una sola vez** el historial
+    (`store.all()`) y cada CFDI se coteja por **proveedor + folio normalizados** (minúsculas,
+    sin acentos y sin espacios sobrantes). Si ya existe una auditoría de ese proveedor con ese
+    folio, el XML se omite con el motivo *"ya capturada antes (folio X)"*. Así una factura
+    capturada ayer como `Refaccionaria del Norte · A-1001` no se vuelve a contar aunque el XML
+    de hoy traiga `REFACCIONARIA DEL NORTE · a-1001`. Si la lectura del historial falla (sin
+    red), el lote **sigue**: el cotejo es una red de seguridad, no un candado. (Al elegir un
+    **único** archivo se mantiene el **aviso de folio ya capturado** que solo avisa, sin
+    bloquear.)
 - **Límites.** Máximo **20 archivos por lote** y **5 MB por archivo** (se comprueba antes de
   leer). Los que exceden se ignoran y se avisa en el resumen.
 - **Privado.** Cada XML se lee y procesa **solo en tu navegador**; el archivo nunca se sube
@@ -425,7 +432,8 @@ npm run format   # Prettier --write (solo archivos nuevos; ver .prettierignore)
 `verificar-pasos.cjs` lee `app.js` (el módulo real), lo ejecuta en un DOM mínimo
 dentro de un contexto `vm` con `node:test` y comprueba el flujo completo (pasos, conteo
 PV/BR, autoguardado, PDF, migración de documentos antiguos y la **carga múltiple de XML**:
-clave de duplicados, lote "omitir y seguir", tope de 20 archivos / 5 MB y que un solo
+clave de duplicados, cotejo contra lo ya guardado (mismo proveedor·folio, ignorando
+mayúsculas/acentos), lote "omitir y seguir", tope de 20 archivos / 5 MB y que un solo
 archivo conserva el flujo de siempre). Los casos del lote usan XML reales de
 `tests/fixtures/`.
 

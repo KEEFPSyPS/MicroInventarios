@@ -13,7 +13,7 @@ import {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,setPersist
 import {firebaseConfig} from "./firebase-config.js";
 /* Súper buscador del Historial: módulo puro (sin DOM ni red) que filtra
    registros por proveedor, fecha y datos de artículo. Ver busqueda.js. */
-import {buscarRegistros} from "./busqueda.js";
+import {buscarRegistros, normalizarTexto} from "./busqueda.js";
 
 /* Si projectId queda vacío, la página guarda en este navegador (modo local). */
 const cloud = !!firebaseConfig.projectId && !!firebaseConfig.apiKey;
@@ -1878,6 +1878,19 @@ function claveFacturaDe(cabecera){
   return "pf:" + prov + "\u00b7" + folio;
 }
 
+/* Clave con la que se compara un CFDI del lote contra las auditorías YA GUARDADAS
+   (Firestore/local). Solo se dispone de la cabecera, no del timbre, así que se usa
+   proveedor + folio normalizados con normalizarTexto() (minúsculas, sin acentos y
+   sin espacios sobrantes). Así una factura capturada ayer como "Refaccionaria del
+   Norte" · "A-1001" se reconoce aunque el XML de hoy traiga "REFACCIONARIA DEL
+   NORTE" · "a-1001". Devuelve "" si falta cualquiera de los dos datos. */
+function claveGuardadaDe(cabecera){
+  const prov = normalizarTexto((cabecera&&cabecera.proveedor)||"");
+  const folio = normalizarTexto((cabecera&&cabecera.folio)||"");
+  if(!prov || !folio) return "";
+  return prov + "\u00b7" + folio;
+}
+
 /* Convierte las partidas crudas del CFDI al esquema completo que exigen las reglas
    (todos los campos presentes, cantidades como texto) y respeta el tope de
    MAX_PARTIDAS. Devuelve [] si no queda ninguna partida válida (código y cantidad>0). */
@@ -1922,6 +1935,21 @@ async function procesarLoteXML(archivos){
   const guardados = [], omitidos = [];
   /* Claves vistas en ESTE lote: evita guardar dos veces la misma factura. */
   const vistas = new Set();
+  /* Índice de lo YA guardado (Firestore/local), leído UNA sola vez al inicio del
+     lote (no una lectura por archivo). Se compara por proveedor·folio normalizado.
+     Si la lectura falla (sin red), se sigue: el dedupe contra lo guardado es una
+     red de seguridad, no debe impedir procesar el lote. */
+  const yaGuardadas = new Set();
+  try{
+    const previos = await store.all();
+    for(const p of (previos||[])){
+      const k = claveGuardadaDe({proveedor:p&&p.proveedor, folio:p&&p.folio});
+      if(k) yaGuardadas.add(k);
+    }
+  }catch(err){
+    /* Sin red o sin permiso de lectura: se omite el cotejo contra lo guardado. */
+    console.warn("No se pudo leer el historial para el cotejo del lote:", err && err.message);
+  }
   const bytes = MAX_LOTE_MB * 1024 * 1024;
   for(const archivo of dentro){
     const nombre = archivo.name || "archivo";
@@ -1951,6 +1979,15 @@ async function procesarLoteXML(archivos){
       continue;
     }
     vistas.add(clave);
+    /* (4b) Ya capturada antes: se compara contra el historial por proveedor·folio
+       normalizado. Se omite para no contar dos veces el ajuste de inventario. Es
+       más laxo que el dedupe interno (no hay UUID del timbre en lo guardado), así
+       que solo aplica cuando el CFDI trae proveedor Y folio. */
+    const claveGuardada = claveGuardadaDe(res.cabecera);
+    if(claveGuardada && yaGuardadas.has(claveGuardada)){
+      omitidos.push({nombre, motivo:`ya capturada antes (folio ${String((res.cabecera&&res.cabecera.folio)||"").trim()})`});
+      continue;
+    }
     /* (5) Se persiste la auditoría completa. */
     const a = normalizar(auditoriaDesdeCFDI(res));
     if(usuario){ a.uid = usuario.uid; a.email = usuario.email || ""; }

@@ -40,6 +40,7 @@ code = "const initializeApp=()=>({}),getFirestore=()=>({}),collection=()=>({}),d
      Los tests de flujo no abren el Historial, pero se define para que el vm
      nunca falle por una referencia ausente. Devuelve todos los registros. */
   "const buscarRegistros=(registros)=>((registros||[]).map(registro=>({registro,partidas:[]})));\n" +
+  "const normalizarTexto=(s)=>{ if(s==null) return \"\"; return String(s).normalize(\"NFD\").replace(/\\p{Diacritic}/gu,\"\").toLowerCase().replace(/\\s+/g,\" \").trim(); };\n" +
   /* La config REAL no se versiona (firebase-config.js está en .gitignore). Se
      inyecta un fixture equivalente para reproducir el modo nube (cloud === true)
      sin depender de un archivo ausente en CI. */
@@ -467,7 +468,9 @@ test("navegación por clics, guardado local y autoguardado", async () => {
 /* ===== Carga múltiple de XML: un CFDI = una auditoría =====
    Cubre: parser CFDI, clave de duplicados (UUID o proveedor·folio), cálculo del
    paso inicial, el lote completo (válidos + sin partidas + ilegible + duplicado
-   + mismo folio con otro proveedor) y que un solo archivo NO se trata como lote.
+   + mismo folio con otro proveedor), el cotejo contra lo YA GUARDADO (una sola
+   lectura de store.all() al inicio; mayúsculas/acentos ignorados) y que un solo
+   archivo NO se trata como lote.
    Se leen fixtures reales de tests/fixtures. */
 const rutaFixture = n => require("path").join(__dirname, "tests", "fixtures", n);
 const leerXML = n => fs.readFileSync(rutaFixture(n), "utf8");
@@ -596,5 +599,65 @@ test("carga múltiple de XML: un solo archivo conserva el flujo de siempre (no e
   ok(res.proveedor === "Refaccionaria del Norte", "también el proveedor: " + res.proveedor);
   ok(!/lista-lote/.test(res.msgHtml), "no aparece el resumen de lote con un solo archivo");
 });
+
+/* Corre procesarLoteXML con un historial YA GUARDADO simulado: se sustituye
+   store.all() por los registros indicados (una sola lectura, como en producción)
+   y se restaura al terminar. Devuelve el resumen real. */
+const correrLoteConGuardados = (lote, guardados) => vm.runInContext(
+  "(async function(){" +
+  "  usuario = {uid:'prueba-uid', email:'auditor@ejemplo.mx'};" +
+  "  const original = store.all;" +
+  "  store.all = async () => globalThis.__guardados;" +
+  "  try{ return JSON.stringify(await procesarLoteXML(globalThis.__loteG)); }" +
+  "  finally{ store.all = original; }" +
+  "})()",
+  Object.assign(sandbox, { __loteG: lote, __guardados: guardados }));
+
+test("carga múltiple de XML: una factura ya guardada antes se omite del lote", async () => {
+  /* El historial ya tiene "Refaccionaria del Norte" · A-1001 (cfdi-valido-a). Un
+     lote con esa misma factura (mismo UUID) y otra nueva: la guardada se omite con
+     motivo legible y la nueva sí se guarda. */
+  const lote = [
+    archivoFalso("a.xml", leerXML("cfdi-valido-a.xml")),
+    archivoFalso("b.xml", leerXML("cfdi-valido-b.xml"))
+  ];
+  const res = JSON.parse(await correrLoteConGuardados(lote,
+    [{ proveedor: "Refaccionaria del Norte", folio: "A-1001" }]));
+  ok(res.guardados.length === 1, "solo se guarda la factura nueva, no " + res.guardados.length);
+  ok(res.guardados[0].folio === "C-2002", "la que se guarda es la nueva (C-2002): " + res.guardados[0].folio);
+  ok(res.omitidos.length === 1, "se omite 1 archivo ya capturado, no " + res.omitidos.length);
+  ok(/ya capturada antes \(folio A-1001\)/.test(res.omitidos[0].motivo),
+     "el motivo nombra el folio ya capturado: " + res.omitidos[0].motivo);
+});
+
+test("carga múltiple de XML: el mismo folio con OTRO proveedor sí se guarda", async () => {
+  /* cfdi-mismo-folio.xml trae folio A-1001 pero de "Otro Proveedor SA": no es la
+     misma factura que la ya guardada de "Refaccionaria del Norte", así que se
+     guarda. La comparación contra lo guardado es por proveedor + folio. */
+  const lote = [archivoFalso("mismo-folio.xml", leerXML("cfdi-mismo-folio.xml"))];
+  const res = JSON.parse(await correrLoteConGuardados(lote,
+    [{ proveedor: "Refaccionaria del Norte", folio: "A-1001" }]));
+  ok(res.guardados.length === 1, "la factura con el mismo folio pero otro proveedor se guarda");
+  ok(res.omitidos.length === 0, "no se omite nada: " + res.omitidos.map(o => o.motivo).join(" | "));
+  ok(res.guardados[0].proveedor === "Otro Proveedor SA", "se guardó la del otro proveedor: " + res.guardados[0].proveedor);
+});
+
+test("carga múltiple de XML: el cotejo contra lo guardado ignora mayúsculas y acentos", async () => {
+  /* Lo guardado viene "sucio" (mayúsculas y espacios sobrantes) y una variante con
+     acento: el cotejo debe reconocer igual la factura gracias a normalizarTexto().
+     (a) proveedor en MAYÚSCULAS + folio con espacios; (b) acento en "Póniente". */
+  const loteA = [archivoFalso("a.xml", leerXML("cfdi-valido-a.xml"))];
+  const resA = JSON.parse(await correrLoteConGuardados(loteA,
+    [{ proveedor: "  REFACCIONARIA DEL NORTE ", folio: "  a-1001 " }]));
+  ok(resA.omitidos.length === 1 && resA.guardados.length === 0,
+     "con lo guardado en mayúsculas/espacios la factura se reconoce como ya capturada");
+
+  const loteB = [archivoFalso("b.xml", leerXML("cfdi-valido-b.xml"))];
+  const resB = JSON.parse(await correrLoteConGuardados(loteB,
+    [{ proveedor: "Autopartes Póniente", folio: "C-2002" }]));
+  ok(resB.omitidos.length === 1 && resB.guardados.length === 0,
+     "un acento en el proveedor guardado no impide reconocer la factura repetida");
+});
+
 
 
