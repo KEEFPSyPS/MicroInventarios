@@ -1,8 +1,9 @@
 # Microinventarios de recepción
 
 PWA (Progressive Web App) **estática** para auditar la recepción de mercancía: capturar
-un folio (a mano o desde el XML/PDF de la factura), dividir el conteo en anaquel entre
-**PV** y **BR**, verificar hallazgos y generar reportes PDF por folio o por día.
+un folio (a mano o desde el XML/PDF de la factura, o **varios XML a la vez**, uno por
+factura), dividir el conteo en anaquel entre **PV** y **BR**, verificar hallazgos y
+generar reportes PDF por folio o por día.
 
 Funciona **instalada** en Android y iOS, y **offline** para abrir la app (los datos en
 vivo de Firestore siempre requieren red). No hay backend propio: el cliente habla
@@ -30,8 +31,10 @@ seguridad del lado del servidor.
 
 La app guía al encargado por **cinco pasos**:
 
-1. **Datos de la factura** — fecha, línea (Volkswagen / Chevrolet), proveedor, folio y
-   encargado.
+1. **Datos de la factura** — fecha, proveedor y folio. El **Responsable** se toma solo de
+   tu sesión (correo con el que iniciaste sesión) y se muestra en solo lectura: ya no se
+   captura a mano. Puedes cargar el XML/PDF de la factura para tomar los datos (y, si es
+   XML, también las partidas) o **elegir varios XML a la vez** (ver más abajo).
 2. **Partidas facturadas** — código, descripción y cantidad facturada.
 3. **Recepción física** — cantidad recibida por partida.
 4. **Conteo en anaquel** — conteo real dividido en **PV** y **BR** (la suma es la
@@ -41,6 +44,36 @@ La app guía al encargado por **cinco pasos**:
 Cada cambio se **autoguarda** (respaldo local inmediato + escritura remota con retardo)
 para que cerrar la pestaña por error no pierda el conteo.
 
+Cada cambio se **autoguarda** (respaldo local inmediato + escritura remota con retardo)
+para que cerrar la pestaña por error no pierda el conteo.
+
+### Carga múltiple de XML (una factura = una auditoría)
+
+En el **Paso 1**, si eliges **dos o más archivos XML a la vez**, cada CFDI se convierte en
+una **auditoría aparte** (su propio folio, su fecha de creación y el responsable de tu
+sesión) y **todas quedan guardadas en el historial**. Es distinto de elegir un **único**
+archivo, que conserva el flujo de siempre: rellena la auditoría en pantalla para que tú la
+revises y sigas capturando.
+
+Reglas del lote, pensadas para que un archivo malo **nunca** tumbe al resto:
+
+- **Omitir y seguir.** Si un XML falla (dañado, sin partidas, repetido o demasiado grande)
+  no se aborta el lote: se omite y se informa en un resumen (región `aria-live` del Paso 1).
+- **Sin partidas → no se guarda.** Un XML que no trae conceptos se omite por completo (no
+  crea una auditoría vacía).
+- **Duplicados.** Se detecta la factura repetida por su **clave**: el **UUID** del timbre
+  fiscal (`TimbreFiscalDigital`) si viene; y si no, `proveedor·folio` en minúsculas. El
+  cotejo es **dentro del lote actual**: si dos XML del mismo lote comparten clave, el
+  segundo se omite como *repetida* (evita contar dos veces el ajuste de inventario). No es
+  un candado contra folios de otro día: para eso está el **aviso de folio ya capturado** que
+  aparece al leer un archivo cuando ya existe una auditoría con ese folio.
+- **Límites.** Máximo **20 archivos por lote** y **5 MB por archivo** (se comprueba antes de
+  leer). Los que exceden se ignoran y se avisa en el resumen.
+- **Privado.** Cada XML se lee y procesa **solo en tu navegador**; el archivo nunca se sube
+  ni se guarda. Lo que se persiste en Firestore es la auditoría resultante, con el mismo
+  esquema (`normalizar()`) y las mismas reglas de seguridad que una captura manual.
+
+## Requisitos
 ## Requisitos
 
 - **Node.js ≥ 20** (para correr en local, generar iconos y ejecutar las pruebas). Con
@@ -258,8 +291,8 @@ La vista **Historial y reportes** incluye una **barra de búsqueda única** que 
 tabla de auditorías (no afecta al reporte del día ni a su PDF). Escribe y el filtrado se
 aplica tras una pausa de ~200 ms, sin perder el foco del campo:
 
-- **Texto libre** por proveedor, folio, línea/marca, encargado o verificador. Ignora
-  mayúsculas, acentos y espacios sobrantes.
+- **Texto libre** por proveedor, folio, responsable (el correo de la sesión), verificador o
+  datos de artículo. Ignora mayúsculas, acentos y espacios sobrantes.
 - **Fecha** en varios formatos: `2026-10-07`, `07/10/2026`, `7/10`, `10/2026`, `octubre`,
   `oct 2026` (también con `/`, `-` o `.` como separador).
 - **Artículos** por código/SKU, descripción y cantidades (facturado, recibido, real). Bajo
@@ -295,7 +328,7 @@ La lógica vive en `busqueda.js` (módulo puro: `normalizarTexto`, `prepararRegi
 ├── generar-iconos.mjs       Genera los PNG del manifest desde icon.svg (usa sharp)
 ├── eslint.config.js         Reglas de lint (ESLint 9 flat config)
 ├── .prettierrc.json         Formato de código (Prettier)
-├── tests/                    Pruebas unitarias (node:test), p. ej. tests/busqueda.test.cjs
+├── tests/                    Pruebas unitarias (node:test): busqueda.test.cjs, firestore.rules.test.cjs y fixtures/ (XML CFDI de ejemplo)
 ├── verificar-pasos.cjs      Pruebas de flujo (node:test): corre app.js en un DOM virtual
 └── README-VERIFICACION.md   Verificación de cuentas, migración y despliegue
 ```
@@ -391,7 +424,10 @@ npm run format   # Prettier --write (solo archivos nuevos; ver .prettierignore)
 
 `verificar-pasos.cjs` lee `app.js` (el módulo real), lo ejecuta en un DOM mínimo
 dentro de un contexto `vm` con `node:test` y comprueba el flujo completo (pasos, conteo
-PV/BR, autoguardado, PDF, migración de documentos antiguos).
+PV/BR, autoguardado, PDF, migración de documentos antiguos y la **carga múltiple de XML**:
+clave de duplicados, lote "omitir y seguir", tope de 20 archivos / 5 MB y que un solo
+archivo conserva el flujo de siempre). Los casos del lote usan XML reales de
+`tests/fixtures/`.
 
 ## Documentación relacionada
 
