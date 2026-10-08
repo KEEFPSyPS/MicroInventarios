@@ -156,3 +156,6 @@ mark{background:#fff2a8;color:inherit;padding:0 1px;border-radius:2px}
 .det-pdf{margin-top:8px}
 .pre-pdf{max-height:220px;overflow:auto;background:#fff;border:1px solid var(--line);padding:8px;font-size:12px;white-space:pre-wrap}
 .cb-auto{width:auto}
+/* Lista del resumen de la carga múltiple de XML (guardados y omitidos). */
+.lista-lote{margin:4px 0 8px;padding-left:20px;font-size:13px}
+.lista-lote li{margin:2px 0}

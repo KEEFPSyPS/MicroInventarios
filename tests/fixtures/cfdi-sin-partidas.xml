@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CFDI sin concepto: no tiene partidas. El lote debe OMITIRLO, nunca guardarlo. -->
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+  Folio="S-3003" Fecha="2026-08-03T08:30:00">
+  <cfdi:Emisor Nombre="Proveedor Sin Partidas"/>
+  <cfdi:Complemento>
+    <cfdi:TimbreFiscalDigital xmlns:cfdi2="http://www.sat.gob.mx/TimbreFiscalDigital"
+      UUID="33333333-3333-3333-3333-333333333333"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>

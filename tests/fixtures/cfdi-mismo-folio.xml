@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MISMO folio (A-1001) que cfdi-valido-a, pero OTRO proveedor y sin timbre:
+     al deduplicar por `proveedor·folio`, la clave es distinta, así que NO es
+     duplicado y debe guardarse como su propia auditoría. -->
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+  Folio="A-1001" Fecha="2026-08-04T11:00:00">
+  <cfdi:Emisor Nombre="Otro Proveedor SA"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto NoIdentificacion="OTRO-1" Descripcion="Pieza distinta" Cantidad="3"/>
+  </cfdi:Conceptos>
+</cfdi:Comprobante>

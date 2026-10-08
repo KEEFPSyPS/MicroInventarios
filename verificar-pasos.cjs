@@ -76,6 +76,48 @@ const sandbox = {
      cerrar). En el DOM real existe; aquí se ignora sin registrarlo. */
   addEventListener: () => {}, removeEventListener: () => {}
 };
+/* --- DOMParser mínimo para los fixtures CFDI ---
+   Node no trae DOMParser. La app lo usa en extraerXML()/leerCabeceraCFDI() para
+   leer el comprobante. En vez de un motor XML completo, se implementa un parser
+   ligero que reconoce etiquetas (con o sin cierre), atributos y self-closing, que
+   es lo que necesitan los fixtures. Expone getElementsByTagName(), getAttribute(),
+   querySelector() y querySelectorAll() con la semántica que usa la app. */
+function parseXML(texto){
+  const raiz = { tag: "#doc", attrs: {}, hijos: [] };
+  const pila = [raiz];
+  const re = /<([!?/]?)([A-Za-z_][\w:.-]*)((?:\s+[\w:.-]+\s*=\s*"[^"]*")*)\s*(\/?)>/g;
+  let m;
+  while((m = re.exec(texto))){
+    const [, cierre, tag, attrsTxt, auto] = m;
+    if(cierre === "!" || cierre === "?") continue;           /* <!DOCTYPE/<?xml */
+    if(cierre === "/"){                                        /* cierre de etiqueta */
+      if(pila.length > 1) pila.pop();
+      continue;
+    }
+    const attrs = {};
+    const ra = /([\w:.-]+)\s*=\s*"([^"]*)"/g;
+    let a;
+    while((a = ra.exec(attrsTxt))) attrs[a[1]] = a[2];
+    const nodo = { tag, attrs, hijos: [] };
+    pila[pila.length - 1].hijos.push(nodo);
+    if(!auto) pila.push(nodo);                                 /* abierta: anida */
+  }
+  const recorrer = (n, fn) => { fn(n); n.hijos.forEach(h => recorrer(h, fn)); };
+  const doc = {
+    querySelector: sel => (sel === "parsererror" ? null : null),
+    getElementsByTagName(t){ const out = []; recorrer(raiz, n => { if(n.tag === t) out.push(el(n)); }); return out; },
+    querySelectorAll(sel){
+      const tags = sel.split(",").map(s => s.replace(/[[\].]/g, "").trim()).filter(Boolean);
+      const out = [];
+      recorrer(raiz, n => { if(tags.some(t => n.attrs && t in n.attrs)) out.push(el(n)); });
+      return out;
+    }
+  };
+  const el = n => ({ getAttribute: k => (k in n.attrs ? n.attrs[k] : null) });
+  return doc;
+}
+sandbox.DOMParser = function(){ this.parseFromString = t => parseXML(String(t)); };
+
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 /* `nodo` se declara DENTRO del contexto: sus closures ven el `nodos` del test,
@@ -123,6 +165,7 @@ vm.runInContext([
   "globalThis.app = { ULTIMO, PASOS, completa, resumen, resultado, normalizar, guardable, blank,",
   "  huella, hayAvance, botonOtroFolio, bloqueAjuste, paso, render, crearPDF, A, sumarReal,",
   "  renderHist: () => renderHist(),",
+  "  procesarLoteXML, auditoriaDesdeCFDI, claveFacturaDe, partidasDeCFDI, extraerXML,",
   "  textoIndicador, texto: () => nodo('app').innerHTML, estado: () => ({vista, msg}), cloud,",
   "  autoguardar: () => globalThis.__auto(), programar: () => globalThis.__programar(),",
   "  intentos: () => globalThis.__intentos, aviso: () => avisoSinGuardar() };",
@@ -420,3 +463,113 @@ test("navegación por clics, guardado local y autoguardado", async () => {
   ok(autoRes.aviso === "", "con el avance guardable el aviso ya no alarma ('se perderá el folio')");
   ok(/Guardado/.test(autoRes.indicador), "el indicador muestra 'Guardado' tras el autoguardado");
 });
+
+/* ===== Carga múltiple de XML: un CFDI = una auditoría =====
+   Cubre: parser CFDI, clave de duplicados (UUID o proveedor·folio), cálculo del
+   paso inicial y el lote completo (válidos + sin partidas + ilegible + duplicado
+   + mismo folio con otro proveedor). Se leen fixtures reales de tests/fixtures. */
+const rutaFixture = n => require("path").join(__dirname, "tests", "fixtures", n);
+const leerXML = n => fs.readFileSync(rutaFixture(n), "utf8");
+const archivoFalso = (nombre, texto) => ({ name: nombre, size: texto.length, text: () => Promise.resolve(texto) });
+
+test("carga múltiple de XML: helpers de dedupe y paso inicial", () => {
+  const { claveFacturaDe, partidasDeCFDI, auditoriaDesdeCFDI, extraerXML } = app;
+
+  /* Clave de duplicado: UUID cuando existe; si no, proveedor·folio. */
+  ok(claveFacturaDe({ uuid: "ABC", proveedor: "P", folio: "F" }) === "uuid:abc",
+     "con UUID la clave usa el UUID");
+  ok(claveFacturaDe({ proveedor: "Refaccionaria", folio: "A-1" }) === "pf:refaccionaria\u00b7a-1",
+     "sin UUID la clave usa proveedor·folio en minúsculas");
+
+  /* partidasDeCFDI: descarta sin código o sin cantidad y completa los seis campos. */
+  const ps = partidasDeCFDI([
+    { codigo: "C1", desc: "D", fact: "5" },
+    { codigo: "", desc: "sin codigo", fact: "2" },
+    { codigo: "C2", desc: "sin cantidad", fact: "" }
+  ]);
+  ok(ps.length === 1 && ps[0].codigo === "C1" && ps[0].fact === "5",
+     "solo queda la partida con codigo y cantidad: " + ps.length);
+  ok(Object.keys(ps[0]).join(",") === "codigo,desc,fact,recib,real,realPV,realBR",
+     "la partida del lote trae los siete campos: " + Object.keys(ps[0]).join(","));
+
+  /* extraerXML sobre un fixture real. */
+  const res = extraerXML(leerXML("cfdi-valido-a.xml"));
+  ok(res.partidas.length === 2, "el fixture válido trae 2 partidas");
+  ok(res.cabecera.folio === "A-1001", "el folio del fixture viene del atributo Folio: " + res.cabecera.folio);
+  ok(res.cabecera.uuid === "11111111-1111-1111-1111-111111111111", "el UUID del timbre se expone aparte");
+
+  /* Paso inicial: con cabecera completa y partidas → 2; sin partidas → 1. */
+  const conTodo = auditoriaDesdeCFDI(res);
+  ok(conTodo.paso === 2, "con cabecera completa y partidas el paso inicial es 2, no " + conTodo.paso);
+  ok(typeof conTodo.email === "string", "el responsable sale de la sesión (email)");
+  ok(!("linea" in conTodo) && !("encargado" in conTodo), "la auditoría del lote no escribe linea ni encargado");
+  const sinPartes = auditoriaDesdeCFDI({ partidas: [], cabecera: res.cabecera });
+  ok(sinPartes.paso === 1, "sin partidas el paso inicial es 1, no " + sinPartes.paso);
+});
+
+test("carga múltiple de XML: lote omite y sigue", async () => {
+  /* Lote de 8: 4 válidos (a y b con UUID; mismo-folio con OTRO proveedor; pf-1 sin
+     UUID), 2 duplicados (dup con el UUID de a; pf-2 con el mismo proveedor·folio de
+     pf-1) y 2 omitidos (sin partidas e ilegible). */
+  const lote = [
+    archivoFalso("a.xml", leerXML("cfdi-valido-a.xml")),
+    archivoFalso("b.xml", leerXML("cfdi-valido-b.xml")),
+    archivoFalso("dup.xml", leerXML("cfdi-duplicado.xml")),
+    archivoFalso("mismo-folio.xml", leerXML("cfdi-mismo-folio.xml")),
+    archivoFalso("pf-1.xml", leerXML("cfdi-pf-1.xml")),
+    archivoFalso("pf-2.xml", leerXML("cfdi-pf-2.xml")),
+    archivoFalso("sin-partidas.xml", leerXML("cfdi-sin-partidas.xml")),
+    archivoFalso("roto.xml", leerXML("cfdi-roto.xml"))
+  ];
+  const r = await vm.runInContext(
+    "(async function(){ usuario = {uid:'prueba-uid', email:'auditor@ejemplo.mx'};" +
+    "  return JSON.stringify(await procesarLoteXML(globalThis.__lote)); })()",
+    Object.assign(sandbox, { __lote: lote }));
+  const res = JSON.parse(r);
+  ok(res.guardados.length === 4, "se guardan 4 auditorías del lote, no " + res.guardados.length);
+  ok(res.omitidos.length === 4, "se omiten 4 archivos, no " + res.omitidos.length);
+  const motivos = res.omitidos.map(o => o.motivo).join(" | ");
+  ok((motivos.match(/repetida/g) || []).length === 2,
+     "los 2 duplicados (UUID y proveedor·folio) se omiten por repetidos: " + motivos);
+  ok(/sin partidas|conceptos/i.test(motivos), "el archivo sin partidas se omite con su motivo: " + motivos);
+  ok(res.guardados.every(g => g.paso === 2), "las 4 auditorías válidas quedan en el paso 2");
+  ok(res.guardados.every(g => g.folio && g.proveedor), "cada auditoría guardada trae folio y proveedor");
+  ok(/4 de 8/.test(res.resumenTexto), "el resumen informa 4 de 8: " + res.resumenTexto);
+
+  /* El resumen visible queda en la región aria-live #facturaMsg. */
+  const msg = sandbox.__nodos["facturaMsg"] ? sandbox.__nodos["facturaMsg"].innerHTML : "";
+  ok(/guardados/.test(msg) && /lista-lote/.test(msg),
+     "el resumen del lote se pinta en #facturaMsg (aria-live)");
+});
+
+test("carga múltiple de XML: tope de 20 archivos y 5 MB por archivo", async () => {
+  const valido = leerXML("cfdi-valido-b.xml");
+  /* 19 válidos con UUID distinto (ninguno duplicado) + 1 de más de 5 MB (dentro de
+     los 20) + 3 válidos de sobra (fuera del tope). Esperado: 1 omitido por tamaño,
+     19 guardados y 3 ignorados por cantidad. */
+  const lote = [];
+  for(let i = 0; i < 19; i++){
+    lote.push(archivoFalso("f" + i + ".xml",
+      valido.replace("22222222-2222-2222-2222-222222222222",
+                     "22222222-2222-2222-2222-2222222222" + String(i).padStart(2, "0"))));
+  }
+  const grande = archivoFalso("grande.xml", valido);
+  grande.size = (5 * 1024 * 1024) + 1;
+  lote.push(grande);
+  for(let i = 19; i < 22; i++){
+    lote.push(archivoFalso("g" + i + ".xml",
+      valido.replace("22222222-2222-2222-2222-222222222222",
+                     "22222222-2222-2222-2222-2222222222" + String(i).padStart(2, "0"))));
+  }
+  const r = await vm.runInContext(
+    "(async function(){ usuario = {uid:'prueba-uid', email:'auditor@ejemplo.mx'};" +
+    "  return JSON.stringify(await procesarLoteXML(globalThis.__lote2)); })()",
+    Object.assign(sandbox, { __lote2: lote }));
+  const res = JSON.parse(r);
+  ok(res.porCantidad === 23 - 20, "se avisa que 3 archivos pasaron del tope de 20: " + res.porCantidad);
+  ok(res.omitidos.some(o => /5 MB/.test(o.motivo)),
+     "el archivo de más de 5 MB se omite: " + res.omitidos.map(o => o.motivo).join(" | "));
+  ok(res.guardados.length === 19, "se guardan 19 auditorías (20 menos el grande), no " + res.guardados.length);
+});
+
+

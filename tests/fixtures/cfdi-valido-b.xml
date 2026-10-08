@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+  Folio="C-2002" Fecha="2026-08-02T09:00:00">
+  <cfdi:Emisor Nombre="Autopartes Poniente"/>
+  <cfdi:Receptor Nombre="Microinventarios"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto NoIdentificacion="CHE-BUJ" Descripcion="Bujia platino" Cantidad="24"/>
+  </cfdi:Conceptos>
+  <cfdi:Complemento>
+    <cfdi:TimbreFiscalDigital xmlns:cfdi2="http://www.sat.gob.mx/TimbreFiscalDigital"
+      UUID="22222222-2222-2222-2222-222222222222"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>

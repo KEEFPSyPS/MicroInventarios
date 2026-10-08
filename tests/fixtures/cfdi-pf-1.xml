@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Sin timbre (sin UUID) y con proveedor+folio iguales a cfdi-pf-2.xml: la clave
+     de duplicado cae al respaldo `proveedor·folio`, así que el lote debe omitir
+     este por repetido del anterior. -->
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+  Folio="PF-777" Fecha="2026-08-05T12:00:00">
+  <cfdi:Emisor Nombre="Proveedor Fallback"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto NoIdentificacion="PF-COD" Descripcion="Pieza fallback" Cantidad="7"/>
+  </cfdi:Conceptos>
+</cfdi:Comprobante>

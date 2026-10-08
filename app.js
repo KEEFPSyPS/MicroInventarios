@@ -525,6 +525,10 @@ let A = blank(), vista = "nueva", msg = "";
 /* Tope de partidas por auditoría. DEBE coincidir con el tope de partidasValidas()
    en firestore.rules (mismo número de posiciones indexadas). */
 const MAX_PARTIDAS = 70;
+/* Topes de la CARGA MÚLTIPLE de XML en el Paso 1: 20 archivos por lote y 5 MB por
+   archivo. Se comprueban ANTES de leer cada archivo para no cargar en memoria un
+   comprobante enorme ni procesar un lote desmedido. */
+const MAX_LOTE_ARCHIVOS = 20, MAX_LOTE_MB = 5;
 let avisoLimite = false;
 
 /* Ajusta el documento al esquema que exigen las reglas de Firestore.
@@ -808,11 +812,13 @@ function paso(n){
       <h2 class="h-tight">Traer datos de la factura (XML CFDI o PDF)</h2>
       <p class="hint mb-s">Toma <strong>folio, proveedor y fecha</strong> de la factura y, si es XML,
       también sus partidas. El archivo se lee <strong>solo en tu navegador</strong>: no se sube ni se guarda.</p>
+      <p class="hint mb-s">Si eliges <strong>varios XML a la vez</strong> (hasta ${MAX_LOTE_ARCHIVOS}, ${MAX_LOTE_MB} MB por archivo),
+      cada factura se guarda como una <strong>auditoría aparte</strong> con su propio folio y quedan en el historial.</p>
       <div class="row">
-        <input type="file" id="factura" accept=".xml,.pdf,application/xml,text/xml,application/pdf" class="inp-file">
+        <input type="file" id="factura" multiple accept=".xml,.pdf,application/xml,text/xml,application/pdf" class="inp-file">
         <button class="btn sec" id="limpiarFact" hidden>Descartar archivo</button>
       </div>
-      <div id="facturaMsg"></div>
+      <div id="facturaMsg" role="status" aria-live="polite" aria-atomic="false"></div>
     </div>
     <div class="grid">
       <label>Fecha de recepción<input type="date" data-f="fecha" value="${esc(A.fecha)}"></label>
@@ -1106,7 +1112,7 @@ async function renderHist(){
     <p class="hint mb-10">Al abrir una auditoría puedes capturar el folio <strong>a mano</strong> o cargar el <strong>XML/PDF</strong> de la factura.</p>
     <div class="tw"><table><caption class="sr">Historial de auditorías</caption><thead><tr><th scope="col">Fecha</th><th scope="col">Responsable</th><th scope="col">Folio</th><th scope="col">Proveedor</th><th scope="col" class="n">Hallazgos</th><th scope="col"><span class="sr">Acciones</span></th></tr></thead>
     <tbody id="histCuerpo"></tbody>
-    </table></div></div>${msg?`<div class="msg">${esc(msg)}</div>`:""}`;
+    </table></div></div>${msg?`<div class="msg" role="status" aria-live="polite" aria-atomic="true">${esc(msg)}</div>`:""}`;
   /* Repinta SOLO el cuerpo de la tabla y el contador. Así el input no pierde el
      foco mientras el usuario escribe (no se reconstruye toda la tarjeta). */
   const pintarCuerpo = texto=>{
@@ -1239,8 +1245,34 @@ document.addEventListener("change", async e=>{
      control no está realmente en pantalla (restos de otra vista) para no mezclar
      la extracción de partidas con la de cabecera. */
   if(!t.isConnected) return;
-  const archivo = t.files && t.files[0];
+  const archivos = t.files ? [...t.files] : [];
+  const archivo = archivos[0];
   if(!archivo) return;
+  /* CARGA MÚLTIPLE: si se eligieron DOS O MÁS XML, cada uno se convierte en su
+     propia auditoría y se guarda de inmediato. Solo aplica capturando una
+     auditoría nueva (el Paso 1 no existe en el historial). Elegir un único
+     archivo conserva el flujo de siempre (rellena la auditoría en pantalla). */
+  if(archivos.length > 1 && vista === "nueva"){
+    const cajaLote = document.getElementById("facturaMsg");
+    if(cajaLote) cajaLote.innerHTML = `<div class="msg">Procesando <strong>${archivos.length}</strong> archivos…</div>`;
+    const bLimpiarLote = document.getElementById("limpiarFact");
+    if(bLimpiarLote) bLimpiarLote.hidden = false;
+    let resumen = null;
+    try{
+      resumen = await procesarLoteXML(archivos);
+    }catch(err){
+      if(cajaLote) cajaLote.innerHTML = `<div class="msg msg-bad">No se pudo procesar el lote: ${esc(err.message||err)}</div>`;
+    }finally{
+      /* El input se limpia para soltar los archivos. Se permanece en el historial,
+         donde ya aparecen todas las auditorías recién guardadas, con un resumen
+         textual del lote (el detalle ya se anunció en #facturaMsg, aria-live). */
+      t.value = "";
+      msg = resumen ? resumen.resumenTexto : "No se pudo procesar el lote de XML.";
+      vista = "hist";
+      await renderHist();
+    }
+    return;
+  }
   const caja = document.getElementById("facturaMsg");
   if(caja) caja.innerHTML = `<div class="msg">Leyendo <strong>${esc(archivo.name)}</strong>…</div>`;
   const bLimpiar = document.getElementById("limpiarFact");
@@ -1605,6 +1637,10 @@ function leerCabeceraCFDI(doc){
      ninguna otra opción, porque es largo pero identifica la factura sin dudas. */
   const folioSucio = limpia(g("cfdi:Comprobante","Folio"));
   const serie      = limpia(g("cfdi:Comprobante","Serie"));
+  /* UUID del timbre fiscal: identifica la factura sin ambigüedad. Se expone
+     aparte (campo `uuid`) para la carga múltiple, que deduplica por él cuando
+     está presente y cae a `proveedor·folio` cuando no. */
+  const uuid       = limpia(g("cfdi:TimbreFiscalDigital","UUID") || g("TimbreFiscalDigital","UUID"));
   let folio = folioSucio, origenFolio = folioSucio ? "Comprobante/Folio" : "";
   if(!folio && serie){ folio = `${serie} ${folioSucio}`.trim(); origenFolio = "Serie + Folio"; }
   if(!folio){
@@ -1612,7 +1648,6 @@ function leerCabeceraCFDI(doc){
     if(alterno){ folio = alterno; origenFolio = "Comprobante/Folie (atributo no estándar)"; }
   }
   if(!folio){
-    const uuid = limpia(g("cfdi:TimbreFiscalDigital","UUID") || g("TimbreFiscalDigital","UUID"));
     if(uuid){ folio = uuid; origenFolio = "UUID del timbre fiscal"; }
   }
   if(!folio && serie){ folio = serie; origenFolio = "Serie"; }
@@ -1623,6 +1658,8 @@ function leerCabeceraCFDI(doc){
     /* Se informa de dónde salió el folio: si vino del UUID conviene que el
        usuario lo sepa, porque no coincide con el número impreso en el papel. */
     folioOrigen: folio ? origenFolio : "",
+    /* UUID del timbre: se conserva aparte para la clave de duplicados del lote. */
+    uuid: uuid.slice(0, 60),
     fecha:  limpia(g("cfdi:Comprobante","Fecha").slice(0,10)),
     proveedor: limpia(emisor ? emisor.getAttribute("Nombre") : "").slice(0, 120)
   };
@@ -1820,6 +1857,129 @@ function aplicarExtraccion(){
   if(!A.partidas.length) A.partidas = [linea0()];
   return van.length;
 }
+
+/* ===== Carga múltiple de XML (un CFDI = una auditoría) =====
+   El usuario puede elegir VARIOS XML en el Paso 1. Cada comprobante se convierte
+   en una auditoría propia (su id, su folio, su creado) con las partidas del CFDI,
+   y TODAS quedan guardadas en el historial. Es un proceso "omitir y seguir": si un
+   archivo falla (dañado, sin partidas, duplicado o demasiado grande) NO se aborta
+   el lote: se omite y se informa. Nada se guarda a medias: cada auditoría se
+   persiste completa con normalizar() (el mismo esquema que exigen las reglas). */
+
+/* Clave con la que se detecta una factura repetida DENTRO del lote.
+   Se prefiere el UUID del timbre fiscal (identifica la factura sin dudas); si el
+   CFDI no lo trae, se usa `proveedor·folio`. En minúsculas y sin espacios sobrantes
+   para no contar como distintas dos capturas de la misma factura. */
+function claveFacturaDe(cabecera){
+  const uuid = String((cabecera&&cabecera.uuid)||"").trim().toLowerCase();
+  if(uuid) return "uuid:" + uuid;
+  const prov = String((cabecera&&cabecera.proveedor)||"").trim().toLowerCase();
+  const folio = String((cabecera&&cabecera.folio)||"").trim().toLowerCase();
+  return "pf:" + prov + "\u00b7" + folio;
+}
+
+/* Convierte las partidas crudas del CFDI al esquema completo que exigen las reglas
+   (todos los campos presentes, cantidades como texto) y respeta el tope de
+   MAX_PARTIDAS. Devuelve [] si no queda ninguna partida válida (código y cantidad>0). */
+function partidasDeCFDI(crudas){
+  return (crudas||[])
+    .map(x=>({
+      codigo: limpia(x.codigo).slice(0, TOPE_CODIGO),
+      desc:   limpia(x.desc).slice(0, TOPE_DESC),
+      fact:   cantidadTexto(x.fact),
+      recib:  "", real: "", realPV: "", realBR: ""
+    }))
+    .filter(x=>x.codigo && aNumero(x.fact)>0)
+    .slice(0, MAX_PARTIDAS);
+}
+
+/* Arma la auditoría NUEVA a partir de un CFDI ya leído. El responsable sale de la
+   sesión (`email`), igual que en guardar(). `paso` = 2 cuando el CFDI trae cabecera
+   (fecha, proveedor y folio) y partidas; si falta algo, queda en 1 para completarlo. */
+function auditoriaDesdeCFDI(res){
+  const cab = res.cabecera || {};
+  const a = blank();
+  a.fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(cab.fecha||"")) ? cab.fecha : a.fecha;
+  a.proveedor = String(cab.proveedor||"");
+  a.folio = String(cab.folio||"");
+  a.email = (usuario && usuario.email) || "";
+  const partes = partidasDeCFDI(res.partidas);
+  a.partidas = partes.length ? partes : [linea0()];
+  const cabeceraCompleta = !!(a.fecha && String(a.proveedor).trim() && String(a.folio).trim());
+  a.paso = (partes.length && cabeceraCompleta) ? 2 : 1;
+  return a;
+}
+
+/* Procesa un LOTE de archivos elegidos en el Paso 1. Devuelve un resumen con lo
+   guardado y lo omitido para anunciarlo en la región aria-live. Nunca lanza por un
+   archivo malo: se omite y se sigue con el siguiente. */
+async function procesarLoteXML(archivos){
+  const caja = document.getElementById("facturaMsg");
+  const n = archivos.length;
+  /* (1) Tope de cantidad. Se procesan los primeros y se avisa del resto. */
+  const dentro = archivos.slice(0, MAX_LOTE_ARCHIVOS);
+  const porCantidad = n - dentro.length;
+  const guardados = [], omitidos = [];
+  /* Claves vistas en ESTE lote: evita guardar dos veces la misma factura. */
+  const vistas = new Set();
+  const bytes = MAX_LOTE_MB * 1024 * 1024;
+  for(const archivo of dentro){
+    const nombre = archivo.name || "archivo";
+    /* (2) Tope por archivo (5 MB). Se comprueba antes de leer para no cargarlo. */
+    if(typeof archivo.size === "number" && archivo.size > bytes){
+      omitidos.push({nombre, motivo:`pesa más de ${MAX_LOTE_MB} MB`});
+      continue;
+    }
+    let res;
+    try{
+      /* El lote es de XML; se reutiliza extraerXML() para no duplicar el parser. */
+      res = extraerXML(await archivo.text());
+    }catch(err){
+      omitidos.push({nombre, motivo: (err && err.message) || "no se pudo leer"});
+      continue;
+    }
+    /* (3) Sin partidas: se omite y NUNCA se guarda (así lo pidió el usuario). */
+    const partes = partidasDeCFDI(res.partidas);
+    if(!partes.length){
+      omitidos.push({nombre, motivo:"sin partidas: no se guardó"});
+      continue;
+    }
+    /* (4) Duplicado dentro del lote: se omite para no contar dos veces el ajuste. */
+    const clave = claveFacturaDe(res.cabecera);
+    if(vistas.has(clave)){
+      omitidos.push({nombre, motivo:"factura repetida en el lote"});
+      continue;
+    }
+    vistas.add(clave);
+    /* (5) Se persiste la auditoría completa. */
+    const a = normalizar(auditoriaDesdeCFDI(res));
+    if(usuario){ a.uid = usuario.uid; a.email = usuario.email || ""; }
+    a.actualizado = Date.now();
+    try{
+      await store.save(JSON.parse(JSON.stringify(a)));
+      guardados.push({nombre, folio:a.folio, proveedor:a.proveedor, paso:a.paso});
+    }catch(err){
+      omitidos.push({nombre, motivo:(err && err.message) || "no se pudo guardar"});
+    }
+  }
+  /* Resumen en la región aria-live (#facturaMsg) que ya está en el HTML. */
+  if(caja){
+    const filasG = guardados.map(g=>`<li><strong>${esc(g.folio||"sin folio")}</strong> · ${esc(g.proveedor||"sin proveedor")} <span class="hint">(Paso ${g.paso})</span></li>`).join("");
+    const filasO = omitidos.map(o=>`<li>${esc(o.nombre)}: <strong>${esc(o.motivo)}</strong></li>`).join("");
+    caja.innerHTML = `<div class="card mt-lg ${guardados.length?"v-ok":"v-bad"}">
+      <p class="hint mb-s"><strong>${guardados.length} de ${n} XML guardados</strong> como auditorías aparte${omitidos.length?`, ${omitidos.length} omitidos`:""}.</p>
+      ${guardados.length?`<ul class="lista-lote">${filasG}</ul>`:""}
+      ${omitidos.length?`<p class="hint mb-s">Omitidos (no se guardaron):</p><ul class="lista-lote">${filasO}</ul>`:""}
+      ${porCantidad>0?`<p class="hint">Se ignoraron ${porCantidad} archivo(s) más: el máximo es ${MAX_LOTE_ARCHIVOS} por lote.</p>`:""}
+    </div>`;
+  }
+  /* Resumen en texto plano para el aviso del Historial (donde se deja al usuario). */
+  const resumenTexto = `${guardados.length} de ${n} XML guardados como auditorías aparte` +
+    (omitidos.length ? `; ${omitidos.length} omitidos (${omitidos.map(o=>o.motivo).join(", ")})` : "") +
+    (porCantidad>0 ? `; ${porCantidad} ignorados por pasar de ${MAX_LOTE_ARCHIVOS}` : "") + ".";
+  return {guardados, omitidos, porCantidad, resumenTexto};
+}
+
 
 /* ===== PDF ===== */
 /* Verifica que las librerías del CDN estén disponibles antes de generar nada.

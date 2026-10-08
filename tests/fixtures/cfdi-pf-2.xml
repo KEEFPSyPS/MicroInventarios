@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Igual que cfdi-pf-1.xml en proveedor+folio y SIN timbre: debe omitirse como
+     duplicado por la clave `proveedor·folio` (no hay UUID del que tirar). -->
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4"
+  Folio="PF-777" Fecha="2026-08-05T12:05:00">
+  <cfdi:Emisor Nombre="Proveedor Fallback"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto NoIdentificacion="PF-COD2" Descripcion="Otra pieza" Cantidad="2"/>
+  </cfdi:Conceptos>
+</cfdi:Comprobante>
