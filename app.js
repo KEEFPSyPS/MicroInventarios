@@ -529,6 +529,10 @@ const MAX_PARTIDAS = 70;
    archivo. Se comprueban ANTES de leer cada archivo para no cargar en memoria un
    comprobante enorme ni procesar un lote desmedido. */
 const MAX_LOTE_ARCHIVOS = 20, MAX_LOTE_MB = 5;
+/* Aviso fijo (región aria-live) si al inicio del lote no se pudo leer el historial:
+   el lote sigue, pero el usuario debe revisar el Historial por posibles duplicados
+   que el cotejo automático no pudo detectar. */
+const AVISO_COTEJO_FALLIDO = "No se pudo comprobar contra lo ya guardado; revisa posibles duplicados en el Historial.";
 let avisoLimite = false;
 
 /* Ajusta el documento al esquema que exigen las reglas de Firestore.
@@ -1940,6 +1944,7 @@ async function procesarLoteXML(archivos){
      Si la lectura falla (sin red), se sigue: el dedupe contra lo guardado es una
      red de seguridad, no debe impedir procesar el lote. */
   const yaGuardadas = new Set();
+  let cotejoFalló = false;
   try{
     const previos = await store.all();
     for(const p of (previos||[])){
@@ -1947,7 +1952,10 @@ async function procesarLoteXML(archivos){
       if(k) yaGuardadas.add(k);
     }
   }catch(err){
-    /* Sin red o sin permiso de lectura: se omite el cotejo contra lo guardado. */
+    /* Sin red o sin permiso de lectura: se omite el cotejo contra lo guardado, pero
+       el lote CONTINÚA. Se avisa también en pantalla (región aria-live) además de la
+       consola, porque pudo quedar una factura sin detectar como repetida. */
+    cotejoFalló = true;
     console.warn("No se pudo leer el historial para el cotejo del lote:", err && err.message);
   }
   const bytes = MAX_LOTE_MB * 1024 * 1024;
@@ -2008,13 +2016,15 @@ async function procesarLoteXML(archivos){
       ${guardados.length?`<ul class="lista-lote">${filasG}</ul>`:""}
       ${omitidos.length?`<p class="hint mb-s">Omitidos (no se guardaron):</p><ul class="lista-lote">${filasO}</ul>`:""}
       ${porCantidad>0?`<p class="hint">Se ignoraron ${porCantidad} archivo(s) más: el máximo es ${MAX_LOTE_ARCHIVOS} por lote.</p>`:""}
+      ${cotejoFalló?`<p class="hint v-bad" role="status">${esc(AVISO_COTEJO_FALLIDO)}</p>`:""}
     </div>`;
   }
   /* Resumen en texto plano para el aviso del Historial (donde se deja al usuario). */
   const resumenTexto = `${guardados.length} de ${n} XML guardados como auditorías aparte` +
     (omitidos.length ? `; ${omitidos.length} omitidos (${omitidos.map(o=>o.motivo).join(", ")})` : "") +
-    (porCantidad>0 ? `; ${porCantidad} ignorados por pasar de ${MAX_LOTE_ARCHIVOS}` : "") + ".";
-  return {guardados, omitidos, porCantidad, resumenTexto};
+    (porCantidad>0 ? `; ${porCantidad} ignorados por pasar de ${MAX_LOTE_ARCHIVOS}` : "") +
+    (cotejoFalló ? `; ${AVISO_COTEJO_FALLIDO}` : "") + ".";
+  return {guardados, omitidos, porCantidad, cotejoFalló, resumenTexto};
 }
 
 

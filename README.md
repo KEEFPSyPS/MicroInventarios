@@ -71,9 +71,10 @@ Reglas del lote, pensadas para que un archivo malo **nunca** tumbe al resto:
     folio, el XML se omite con el motivo *"ya capturada antes (folio X)"*. Así una factura
     capturada ayer como `Refaccionaria del Norte · A-1001` no se vuelve a contar aunque el XML
     de hoy traiga `REFACCIONARIA DEL NORTE · a-1001`. Si la lectura del historial falla (sin
-    red), el lote **sigue**: el cotejo es una red de seguridad, no un candado. (Al elegir un
-    **único** archivo se mantiene el **aviso de folio ya capturado** que solo avisa, sin
-    bloquear.)
+    red), el lote **sigue** y el resumen muestra el aviso *"No se pudo comprobar contra lo ya
+    guardado; revisa posibles duplicados en el Historial."*: el cotejo es una red de
+    seguridad, no un candado. (Al elegir un **único** archivo se mantiene el **aviso de folio
+    ya capturado** que solo avisa, sin bloquear.)
 - **Límites.** Máximo **20 archivos por lote** y **5 MB por archivo** (se comprueba antes de
   leer). Los que exceden se ignoran y se avisa en el resumen.
 - **Privado.** Cada XML se lee y procesa **solo en tu navegador**; el archivo nunca se sube
@@ -433,9 +434,9 @@ npm run format   # Prettier --write (solo archivos nuevos; ver .prettierignore)
 dentro de un contexto `vm` con `node:test` y comprueba el flujo completo (pasos, conteo
 PV/BR, autoguardado, PDF, migración de documentos antiguos y la **carga múltiple de XML**:
 clave de duplicados, cotejo contra lo ya guardado (mismo proveedor·folio, ignorando
-mayúsculas/acentos), lote "omitir y seguir", tope de 20 archivos / 5 MB y que un solo
-archivo conserva el flujo de siempre). Los casos del lote usan XML reales de
-`tests/fixtures/`.
+mayúsculas/acentos y aviso si falla su lectura), lote "omitir y seguir", tope de 20 archivos
+/ 5 MB y que un solo archivo conserva el flujo de siempre). Los casos del lote usan XML
+reales de `tests/fixtures/`.
 
 ## Documentación relacionada
 

@@ -658,6 +658,41 @@ test("carga múltiple de XML: el cotejo contra lo guardado ignora mayúsculas y 
   ok(resB.omitidos.length === 1 && resB.guardados.length === 0,
      "un acento en el proveedor guardado no impide reconocer la factura repetida");
 });
+test("carga múltiple de XML: si falla la lectura del historial, el lote continúa y se avisa", async () => {
+  /* store.all() rechaza (sin red / sin permiso). El cotejo contra lo guardado no se
+     puede hacer, pero el lote debe seguir guardando los válidos y, además del
+     console.warn, el aviso fijo debe aparecer en el resumen (aria-live #facturaMsg)
+     y en el texto plano. Se comprueba también que el resto del lote (un duplicado
+     interno) sigue funcionando. */
+  const lote = [
+    archivoFalso("a.xml", leerXML("cfdi-valido-a.xml")),
+    archivoFalso("dup.xml", leerXML("cfdi-duplicado.xml")),   /* repetida dentro del lote (UUID de a) */
+    archivoFalso("b.xml", leerXML("cfdi-valido-b.xml")),
+    archivoFalso("pf-1.xml", leerXML("cfdi-pf-1.xml"))
+  ];
+  const r = await vm.runInContext(
+    "(async function(){" +
+    "  usuario = {uid:'prueba-uid', email:'auditor@ejemplo.mx'};" +
+    "  const original = store.all;" +
+    "  store.all = async () => { throw new Error('sin red'); };" +
+    "  try{ return JSON.stringify(await procesarLoteXML(globalThis.__loteF)); }" +
+    "  finally{ store.all = original; }" +
+    "})()",
+    Object.assign(sandbox, { __loteF: lote }));
+  const res = JSON.parse(r);
+  ok(res.cotejoFalló === true, "el resumen marca que el cotejo contra lo guardado falló");
+  ok(res.guardados.length === 3, "el lote CONTINÚA y guarda los 3 válidos, no " + res.guardados.length);
+  ok(res.omitidos.length === 1 && /repetida/.test(res.omitidos[0].motivo),
+     "el dedupe interno sigue funcionando aunque falle el cotejo externo");
+  const aviso = "No se pudo comprobar contra lo ya guardado; revisa posibles duplicados en el Historial.";
+  ok(res.resumenTexto.includes(aviso), "el texto plano incluye el aviso de cotejo fallido: " + res.resumenTexto);
+
+  const msg = sandbox.__nodos["facturaMsg"] ? sandbox.__nodos["facturaMsg"].innerHTML : "";
+  ok(/No se pudo comprobar contra lo ya guardado/.test(msg),
+     "el aviso aparece en la región aria-live #facturaMsg");
+});
+
+
 
 
 
