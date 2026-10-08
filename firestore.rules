@@ -65,18 +65,37 @@ service cloud.firestore {
       return ps is list && ps.size() > 0 && ps.size() <= 70;
     }
 
+    /* `linea` (Volkswagen/Chevrolet) y `encargado` son campos OPCIONALES.
+       Motivo: la app ya no los captura (el responsable sale del token de sesión,
+       guardado en `email`). Para no romper la compatibilidad se permiten TRES
+       estados:
+         · ausente  → documento NUEVO de la app actual (no se escribe el campo).
+         · ''       → borrador guardado por una versión previa de la app.
+         · válido   → documento VIEJO que sí traía el valor.
+       Un valor PRESENTE pero inválido (p. ej. linea = 'Nissan') sigue denegado.
+       `!(campo in data)` es la comprobación de ausencia en el lenguaje de reglas. */
+    function lineaValida() {
+      return !('linea' in request.resource.data)
+          || request.resource.data.linea in ['', 'Volkswagen', 'Chevrolet'];
+    }
+    function encargadoValido() {
+      return !('encargado' in request.resource.data)
+          || (request.resource.data.encargado is string
+              && request.resource.data.encargado.size() <= 120);
+    }
+
     /* Límites de tamaño y coherencia de identidad.
        Se usa `let` (soportado en rules_version '2', máx. 10 bindings) para no
        repetir request.resource.data en cada línea. */
     function contenidoValido() {
       let d = request.resource.data;
       return partidasValidas(d.partidas)
-          && d.linea in ['', 'Volkswagen', 'Chevrolet']
+          && lineaValida()
+          && encargadoValido()
           && d.paso is int && d.paso >= 1 && d.paso <= 6
           && d.fecha is string && d.fecha.matches('^\\d{4}-\\d{2}-\\d{2}$')
           && d.folio is string && d.folio.size() <= 60
           && d.proveedor is string && d.proveedor.size() <= 120
-          && d.encargado is string && d.encargado.size() <= 120
           && d.verificador is string && d.verificador.size() <= 120
           && d.id is string && d.id.size() <= 60
           && d.creado is int && d.creado > 0

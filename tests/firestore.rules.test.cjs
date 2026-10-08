@@ -91,6 +91,27 @@ test("dueño verificado CREA su auditoría válida (permitido)", async () => {
   await assertSucceeds(setDoc(doc(db, "auditorias", "aud-1"), auditoria("u1", OPERADOR)));
 });
 
+test("dueño verificado CREA sin linea ni encargado (permitido: campos opcionales)", async () => {
+  const db = ctx("u1", OPERADOR).firestore();
+  const docSinCampos = auditoria("u1", OPERADOR);
+  delete docSinCampos.linea;
+  delete docSinCampos.encargado;
+  await assertSucceeds(setDoc(doc(db, "auditorias", "aud-1"), docSinCampos));
+});
+
+test("dueño verificado CREA con linea y encargado vacíos (permitido: compatibilidad)", async () => {
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(
+    setDoc(doc(db, "auditorias", "aud-1"), auditoria("u1", OPERADOR, { linea: "", encargado: "" }))
+  );
+});
+
+test("documento VIEJO con linea y encargado válidos se actualiza (permitido)", async () => {
+  await sembrar("aud-1", auditoria("u1", OPERADOR, { linea: "Chevrolet", encargado: "Luis" }));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(updateDoc(doc(db, "auditorias", "aud-1"), { paso: 4 }));
+});
+
 test("usuario verificado LEE auditorías de otros (permitido)", async () => {
   await sembrar("aud-1", auditoria("u0", "otro@ejemplo.com"));
   const db = ctx("u1", OPERADOR).firestore();
@@ -156,11 +177,30 @@ test("crea con id distinto al de la ruta (denegado)", async () => {
   await assertFails(setDoc(doc(db, "auditorias", "ruta-distinta"), auditoria("u1", OPERADOR)));
 });
 
-test("esquema inválido: línea fuera de la lista (denegado)", async () => {
+test("esquema inválido: línea PRESENTE fuera de la lista (denegado)", async () => {
   const db = ctx("u1", OPERADOR).firestore();
   await assertFails(
     setDoc(doc(db, "auditorias", "aud-1"), auditoria("u1", OPERADOR, { linea: "Nissan" }))
   );
+});
+
+test("esquema inválido: encargado PRESENTE de otro tipo (denegado)", async () => {
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(
+    setDoc(doc(db, "auditorias", "aud-1"), auditoria("u1", OPERADOR, { encargado: 123 }))
+  );
+});
+
+test("update cambiando el email (identidad) sigue denegado", async () => {
+  await sembrar("aud-1", auditoria("u1", OPERADOR));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), { email: "otro@ejemplo.com" }));
+});
+
+test("update del dueño con email del token (permitido)", async () => {
+  await sembrar("aud-1", auditoria("u1", OPERADOR));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(updateDoc(doc(db, "auditorias", "aud-1"), { email: OPERADOR, paso: 4 }));
 });
 
 test("esquema inválido: paso fuera de rango (denegado)", async () => {
