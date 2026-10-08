@@ -214,6 +214,17 @@ const hall = app.paso(5);
 ok(!/SICAR/i.test(hall), "la pantalla de hallazgos no lista columna SICAR");
 ok(/data-go="4"/.test(hall), "el boton Anterior del paso 5 lleva al paso 4");
 
+/* --- Paso 1: sin campos Línea/Encargado; responsable de solo lectura --- */
+const p1ui = app.paso(1);
+ok(!/data-f="linea"/.test(p1ui) && !/<select/.test(p1ui),
+   "el Paso 1 ya no ofrece el selector de Línea");
+ok(!/data-f="encargado"/.test(p1ui),
+   "el Paso 1 ya no ofrece el campo Encargado");
+ok(/data-f="fecha"/.test(p1ui) && /data-f="proveedor"/.test(p1ui) && /data-f="folio"/.test(p1ui),
+   "el Paso 1 conserva fecha, proveedor y folio");
+ok(/Responsable/.test(p1ui) && /readonly/.test(p1ui) && /prueba@ejemplo\.mx/.test(p1ui),
+   "el Paso 1 muestra el responsable de la sesión como solo lectura");
+
 /* --- Paso 4: conteo dividido en dos columnas (PV y BR) que suman el total --- */
 const p4 = app.paso(4);
 ok(/data-k="realPV"/.test(p4) && /data-k="realBR"/.test(p4),

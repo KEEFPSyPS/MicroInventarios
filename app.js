@@ -792,12 +792,9 @@ function paso(n){
   /* `extra` va ANTES de "Guardar y continuar" a propósito: el botón que avanza de
      paso es siempre el último de la barra y no debe moverse de sitio entre pasos. */
   const nav = (extra="")=>`<div class="bar"><button class="btn sec" data-go="${n-1}" ${n===1?"disabled":""}>Anterior</button>${extra}<button class="btn" id="sig" ${PASOS[n-1].ok(A)?"":"disabled"}>Guardar y continuar</button></div>`;
-  /* El botón para abrir otro folio se agrega a la barra ya construida y NO se
-     ofrece en el Paso 1: ahí es donde el usuario ya está capturando el folio
-     nuevo, así que el botón solo estorbaría. */
   /* El aviso de "sin guardar" y el botón de otro folio se agregan a la barra.
      El botón SÍ se ofrece también en el Paso 1: cuando la entrada del folio es
-     MANUAL (no por XML/PDF), el encargado teclea el folio y necesita abrir el
+     MANUAL (no por XML/PDF), el usuario teclea el folio y necesita abrir el
      siguiente sin antes capturar todas las partidas. Como el folio solo se puede
      guardar una vez escrito, la condición de hayAvance() ya evita ofrecer un botón
      que no haría nada (en un folio recién abierto no aparece). */
@@ -819,10 +816,9 @@ function paso(n){
     </div>
     <div class="grid">
       <label>Fecha de recepción<input type="date" data-f="fecha" value="${esc(A.fecha)}"></label>
-      <label>Línea<select data-f="linea"><option value="">Selecciona…</option>${["Volkswagen","Chevrolet"].map(l=>`<option ${A.linea===l?"selected":""}>${l}</option>`).join("")}</select></label>
       <label>Proveedor<input data-f="proveedor" value="${esc(A.proveedor)}"></label>
       <label>Folio de factura<input data-f="folio" value="${esc(A.folio)}"></label>
-      <label>Encargado que recibe<input data-f="encargado" value="${esc(A.encargado)}"></label>
+      <label>Responsable<input value="${esc((usuario&&usuario.email)||"")}" readonly aria-readonly="true" title="Se asigna solo con tu sesión"></label>
     </div>
     <p class="hint">¿Llegó otra factura? <strong>Empezar otro folio</strong> guarda esta en el historial
     (aparece como <strong>En captura</strong>) y abre la siguiente sin cerrar nada.</p>
@@ -846,7 +842,7 @@ function paso(n){
     <div class="tw"><table><caption class="sr">Recepción física por partida</caption><tr><th scope="col">Código</th><th scope="col">Descripción</th><th scope="col" class="n">Facturada</th><th scope="col" class="n">Recibida</th><th scope="col" class="n">Diferencia</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${esc(p.fact)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="recib" aria-label="Cantidad recibida de la partida ${i+1}" value="${esc(p.recib)}"></td><td class="n" data-d="${i}">${p.recib===""?"":`<span class="${cls(dR(p))}">${fmt(dR(p))}</span>`}</td></tr>`)}
     </table></div>${navTodos(botonOtroFolio())}`;
-  if(n===4) return `<h2>Conteo en anaquel</h2><p class="hint">Lo hace el verificador, por separado del encargado. Las cantidades esperadas no se muestran para que el conteo sea independiente. Cuenta la existencia de cada código <strong>dividida por ubicación</strong>: las piezas del <strong>Piso de Ventas (PV)</strong> y las de la <strong>Bodega (BR)</strong>; el total se suma solo.</p>
+  if(n===4) return `<h2>Conteo en anaquel</h2><p class="hint">Lo hace el verificador, por separado de quien recibió la mercancía. Las cantidades esperadas no se muestran para que el conteo sea independiente. Cuenta la existencia de cada código <strong>dividida por ubicación</strong>: las piezas del <strong>Piso de Ventas (PV)</strong> y las de la <strong>Bodega (BR)</strong>; el total se suma solo.</p>
     <div class="grid"><label>Verificador<input data-f="verificador" value="${esc(A.verificador)}"></label></div>
     <div class="tw"><table><caption class="sr">Conteo en anaquel por partida (PV y BR)</caption><tr><th scope="col">Código</th><th scope="col">Descripción</th><th scope="col" class="n">PV · Piso de Ventas</th><th scope="col" class="n">BR · Bodega</th><th scope="col" class="n">Total real</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="realPV" aria-label="Existencia en Piso de Ventas de la partida ${i+1}" value="${esc(p.realPV)}"></td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="realBR" aria-label="Existencia en Bodega de la partida ${i+1}" value="${esc(p.realBR)}"></td><td class="n" data-t="${i}">${p.real===""?"":esc(p.real)}</td></tr>`)}
@@ -854,7 +850,7 @@ function paso(n){
   /* n===5 es AHORA la pantalla de hallazgos: el antiguo paso de captura de SICAR
      desapareció, así que no hay ningún bloque intermedio que devolver aquí. */
   const r=resumen([A]);
-  return `<h2>Hallazgos de la auditoría</h2><p class="hint">Folio ${esc(A.folio)} · ${esc(A.proveedor)} · ${esc(A.linea)} · ${esc(A.fecha)}</p>
+  return `<h2>Hallazgos de la auditoría</h2><p class="hint">Folio ${esc(A.folio)} · ${esc(A.proveedor)} · ${esc(A.email||A.encargado||"")} · ${esc(A.fecha)}</p>
     <div class="kpis">
       <div class="kpi"><span>Partidas revisadas</span><strong>${r.part}</strong></div>
       <div class="kpi ${r.hall?"bad":"ok"}"><span>Con hallazgo</span><strong>${r.hall}</strong></div>
@@ -1336,17 +1332,17 @@ document.addEventListener("click",async e=>{
       const r = await otroFolio();
       if(r === "cancelar") return renderHist();
       if(r === "retomar" || r === "guardarPendiente"){
-        if(r === "guardarPendiente" && !await guardar()){ msg = "No se guardó el folio: revisa fecha, línea, proveedor y folio."; return renderHist(); }
+        if(r === "guardarPendiente" && !await guardar()){ msg = "No se guardó el folio: revisa fecha, proveedor y folio."; return renderHist(); }
         const l = (window._list||[]).find(x=>x.id===window._folioPendiente) || null;
         if(!l){ msg = "Ese folio ya no está disponible."; return renderHist(); }
         return elegirAbierto(l);
       }
       if(r === "nuevo" || r === false){
-        if(hayAvance(A) && !await guardar()){ msg = "No se guardó el folio: revisa fecha, línea, proveedor y folio."; return renderHist(); }
+        if(hayAvance(A) && !await guardar()){ msg = "No se guardó el folio: revisa fecha, proveedor y folio."; return renderHist(); }
         A = blank(); msg = ""; vista = "nueva"; return render();
       }
       /* Guardar y empezar otro: el folio en pantalla se guarda y se abre uno nuevo. */
-      if(!await guardar()){ msg = "No se guardó el folio: revisa fecha, línea, proveedor y folio."; return renderHist(); }
+      if(!await guardar()){ msg = "No se guardó el folio: revisa fecha, proveedor y folio."; return renderHist(); }
       A = blank(); msg = "Folio guardado en el historial. Captura el siguiente."; vista = "nueva"; return render();
     }
     if(b.id==="nHist"){vista="hist";return render();}
@@ -1370,7 +1366,7 @@ document.addEventListener("click",async e=>{
         ? `Avance guardado. Puedes empezar otro folio cuando quieras: este quedará en el historial como “En captura · Paso ${A.paso}”.`
         : (anterior>=2
             ? "No se guardó el avance: revisa que cada partida tenga código, descripción y cantidad facturada."
-            : "Avance sin guardar todavía: completa fecha, línea, proveedor y folio.");
+            : "Avance sin guardar todavía: completa fecha, proveedor y folio.");
       return render();
     }
     if(b.id==="nuevo"){A=blank();msg="";return render();}
@@ -1414,7 +1410,7 @@ document.addEventListener("click",async e=>{
          en blanco como si el anterior estuviera a salvo. */
       const ok = await guardar();
       if(!ok){
-        msg = "No se guardó el folio: revisa fecha, línea, proveedor y folio.";
+        msg = "No se guardó el folio: revisa fecha, proveedor y folio.";
         return render();
       }
       if(r === "guardarPendiente"){
