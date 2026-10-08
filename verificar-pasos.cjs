@@ -120,7 +120,7 @@ vm.runInContext(code, sandbox, { filename: "index.html" });
 
 /* Handles y helpers, evaluados dentro del contexto para compartir reino. */
 vm.runInContext([
-  "globalThis.app = { ULTIMO, PASOS, completa, resumen, resultado, normalizar, guardable,",
+  "globalThis.app = { ULTIMO, PASOS, completa, resumen, resultado, normalizar, guardable, blank,",
   "  huella, hayAvance, botonOtroFolio, bloqueAjuste, paso, render, crearPDF, A, sumarReal,",
   "  textoIndicador, texto: () => nodo('app').innerHTML, estado: () => ({vista, msg}), cloud,",
   "  autoguardar: () => globalThis.__auto(), programar: () => globalThis.__programar(),",
@@ -152,6 +152,44 @@ ok(!app.PASOS.some(p => /sicar/i.test(p.t)), "ningun paso se llama SICAR");
 ok(app.PASOS[4].t === "Hallazgos y reporte", "el paso 5 es 'Hallazgos y reporte'");
 ok(app.completa(A) === true, "con recib y real (sin sicar) la auditoria esta COMPLETA");
 ok(app.PASOS[4].ok(A) === true, "el paso 5 se evalua sin exigir sicar");
+
+/* --- Responsable automático: linea y encargado YA NO se capturan ---
+   Objetivo: las auditorías NUEVAS no escriben `linea` ni `encargado` (el
+   responsable sale de la sesión → campo `email`), pero las VIEJAS que sí los
+   traen se siguen leyendo sin romper nada. */
+const nuevo = app.blank();
+ok(!("linea" in nuevo) && !("encargado" in nuevo),
+   "blank() NO crea linea ni encargado");
+ok(nuevo.email === "", "blank() reserva el campo email para el responsable de la sesión");
+
+/* El Paso 1 ya no exige linea ni encargado: con fecha, proveedor y folio basta. */
+const p1 = app.blank();
+p1.fecha = "2026-05-05"; p1.proveedor = "ACME"; p1.folio = "F-1";
+ok(app.PASOS[0].ok(p1) === true, "el Paso 1 se completa sin linea ni encargado");
+delete p1.proveedor;
+ok(app.PASOS[0].ok(p1) === false, "el Paso 1 sigue exigiendo proveedor");
+
+/* normalizar(): ausente → se elimina (doc nuevo); válido → se conserva (doc viejo). */
+const sinCampos = app.normalizar({ id: "n1", fecha: "2026-05-05", proveedor: "P", folio: "F-2",
+  partidas: [{ codigo: "C", desc: "D", fact: "1" }], paso: 1 });
+ok(!("linea" in sinCampos) && !("encargado" in sinCampos),
+   "normalizar() no escribe linea/encargado cuando no vienen (doc nuevo)");
+ok(app.guardable(sinCampos) === true, "guardable() acepta un documento sin linea/encargado");
+
+const viejoOk = app.normalizar({ id: "v2", fecha: "2026-05-05", proveedor: "P", folio: "F-3",
+  linea: "Volkswagen", encargado: "Luis", partidas: [{ codigo: "C", desc: "D", fact: "1" }], paso: 1 });
+ok(viejoOk.linea === "Volkswagen" && viejoOk.encargado === "Luis",
+   "normalizar() CONSERVA linea/encargado válidos de un documento viejo");
+
+const viejoMalo = app.normalizar({ id: "v3", fecha: "2026-05-05", proveedor: "P", folio: "F-4",
+  linea: "Nissan", encargado: 5, partidas: [{ codigo: "C", desc: "D", fact: "1" }], paso: 1 });
+ok(!("linea" in viejoMalo) && !("encargado" in viejoMalo),
+   "normalizar() descarta linea/encargado inválidos (las reglas los denegarían)");
+
+/* hayAvance(): sin linea/encargado, un folio vacío sigue sin contar como avance. */
+const vacio = app.blank();
+ok(app.hayAvance(vacio) === false, "hayAvance() es false en un folio recién abierto (sin linea/encargado)");
+ok(app.hayAvance(p1) === true, "hayAvance() detecta folio/proveedor aunque no haya linea/encargado");
 
 /* La app real solo pinta con sesión iniciada (cloud && !usuario sale de render()).
    En el navegador eso lo resuelve onAuthStateChanged; aquí se simula un usuario

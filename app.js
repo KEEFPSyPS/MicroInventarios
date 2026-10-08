@@ -448,7 +448,12 @@ const hoy = ()=>{const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOff
    calcula solo (ver sumarReal()), para que el resto de la app (resultado, resumen,
    ajuste y PDF) siga trabajando con una única existencia total. */
 const linea0 = ()=>({codigo:"",desc:"",fact:"",recib:"",realPV:"",realBR:"",real:""});
-const blank = ()=>({id:uid(),fecha:hoy(),linea:"",proveedor:"",folio:"",encargado:"",verificador:"",partidas:[linea0()],paso:1,creado:Date.now()});
+/* El responsable de la auditoría YA NO se captura: sale del correo de la sesión
+   (usuario.email) y se persiste en `email`, que firestore.rules valida contra el
+   token (d.email == request.auth.token.email). Por eso `blank()` no crea los
+   campos `linea` ni `encargado`: las auditorías NUEVAS no los escriben (las
+   VIEJAS que sí los traen se siguen leyendo; ver normalizar()). */
+const blank = ()=>({id:uid(),fecha:hoy(),proveedor:"",folio:"",email:"",verificador:"",partidas:[linea0()],paso:1,creado:Date.now()});
 const dR = p=>num(p.recib)-num(p.fact);
 /* Existencia real total = Piso de Ventas + Bodega. Se recalcula SIEMPRE desde las
    dos divisiones para que `real` nunca quede desincronizado. Si NINGUNA de las
@@ -506,7 +511,7 @@ function resumen(list){
    rompían la pantalla. */
 const partidasSeguras = a=>Array.isArray(a&&a.partidas)?a.partidas:[];
 const PASOS = [
-  {t:"Datos de la factura", ok:a=>!!(a.fecha&&a.linea&&String(a.proveedor||"").trim()&&String(a.folio||"").trim()&&String(a.encargado||"").trim())},
+  {t:"Datos de la factura", ok:a=>!!(a.fecha&&String(a.proveedor||"").trim()&&String(a.folio||"").trim())},
   {t:"Partidas facturadas", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&String(p.codigo||"").trim()&&String(p.desc||"").trim()&&num(p.fact)>0)}},
   {t:"Recepción física", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&p.recib!=="")}},
   {t:"Conteo en anaquel", ok:a=>{const ps=partidasSeguras(a);return !!String(a.verificador||"").trim()&&ps.length>0&&ps.every(p=>p&&p.realPV!==""&&p.realBR!=="")}},
@@ -548,11 +553,17 @@ function normalizar(a){
   };
   a.id = txt(a.id, 60) || uid();
   a.fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(a.fecha||"")) ? a.fecha : hoy();
-  a.linea = ["","Volkswagen","Chevrolet"].includes(a.linea) ? a.linea : "";
   a.folio = txt(a.folio, 60);
   a.proveedor = txt(a.proveedor, 120);
-  a.encargado = txt(a.encargado, 120);
   a.verificador = txt(a.verificador, 120);
+  /* `linea` y `encargado` son OPCIONALES (ver firestore.rules → lineaValida() y
+     encargadoValido()). La app ya no los captura, así que un documento NUEVO no
+     debe escribirlos. Solo se CONSERVAN si vienen de una auditoría VIEJA con un
+     valor válido; en cualquier otro caso se eliminan para no enviar basura que
+     las reglas rechazarían con permission-denied. */
+  if(!["Volkswagen","Chevrolet"].includes(a.linea)) delete a.linea;
+  if(typeof a.encargado === "string" && a.encargado.trim()) a.encargado = txt(a.encargado, 120);
+  else delete a.encargado;
   /* El tope sale de PASOS.length (5) en lugar de un 6 escrito a mano: si se
      hubiera dejado el 6, un documento antiguo en el Paso 6 quedaría apuntando a
      un paso que ya no existe y la pantalla saldría en blanco. */
@@ -596,12 +607,11 @@ function normalizar(a){
    recién abierta (con la fila en blanco) todavía NO se puede guardar.
    Se replica aquí ese mínimo para avisar antes de intentar la escritura,
    incluyendo los topes de longitud de codigo (60) y desc (300).
-   OJO: `linea` puede ser "" (contenidoValido() acepta ['', 'Volkswagen',
-   'Chevrolet']); exigirla con texto bloquearía auditorías que Firestore SÍ
-   aceptaría. Solo se comprueba que sea uno de los valores permitidos. */
+   OJO: `linea` y `encargado` NO se comprueban: son campos OPCIONALES (la app ya
+   no los captura) y firestore.rules los acepta ausentes o válidos. Exigirlos aquí
+   bloquearía auditorías que Firestore SÍ aceptaría. */
 function guardable(a){
-  if(!a || !a.fecha || !["","Volkswagen","Chevrolet"].includes(a.linea)
-     || !String(a.proveedor||"").trim()) return false;
+  if(!a || !a.fecha || !String(a.proveedor||"").trim()) return false;
   const ps = Array.isArray(a.partidas)?a.partidas:[];
   if(!ps.length || ps.length > MAX_PARTIDAS) return false;
   /* Toda partida debe tener código y descripción con texto dentro de los topes,
@@ -862,12 +872,13 @@ function paso(n){
    "Empezar otro folio": si el usuario no capturó NADA (la pantalla recién abierta,
    sin folio, sin proveedor y con la fila en blanco), no hay nada que guardar y no
    se le molesta con avisos ni con un botón que no haría nada.
-   OJO con `linea`: blank() la deja en "", y como "" es un valor que las reglas
-   aceptan, comprobarla como "capturada" marcaría avance en un folio vacío. */
+   OJO: `linea` y `encargado` ya NO se capturan, así que no cuentan como avance
+   (un documento VIEJO que los traiga sí tiene folio/proveedor, y por eso ya
+   aparecería por esas otras señales). */
 function hayAvance(a){
   if(!a) return false;
-  if(String(a.folio||"").trim() || String(a.proveedor||"").trim() || String(a.encargado||"").trim()
-     || String(a.verificador||"").trim() || String(a.linea||"").trim()) return true;
+  if(String(a.folio||"").trim() || String(a.proveedor||"").trim()
+     || String(a.verificador||"").trim()) return true;
   return partidasSeguras(a).some(p=>p && (p.codigo||p.desc||p.fact||p.recib||p.real));
 }
 
@@ -875,12 +886,12 @@ function hayAvance(a){
    una copia local queda al instante y la escritura remota se dispara con retardo.
    Por eso aquí NO se alarma con "se perderá el folio" (ya no es cierto). Solo se
    recuerda guardar cuando el documento todavía NO cumple el esquema (falta fecha,
-   línea, proveedor o folio): hasta entonces no hay nada definitivo que confirmar. */
+   proveedor o folio): hasta entonces no hay nada definitivo que confirmar. */
 function avisoSinGuardar(){
   if(huella(A) === A.hist) return "";
   if(guardable(A) || guardableBorrador(A))
     return `<span class="avisoAuto" title="Se guarda solo mientras capturas">Si cierras ahora, tu avance queda a salvo.</span>`;
-  return `<span class="avisoAuto pend" title="El folio aún no se puede guardar">Aún sin guardar: completa fecha, línea, proveedor y folio.</span>`;
+  return `<span class="avisoAuto pend" title="El folio aún no se puede guardar">Aún sin guardar: completa fecha, proveedor y folio.</span>`;
 }
 
 /* Huella del avance capturado. Puede ser "optimista" (marcar algo como guardado
@@ -888,8 +899,8 @@ function avisoSinGuardar(){
    En cambio, si dijera que NO hay cambios cuando sí los hay, el aviso de
    "sin guardar" se apagaría solo y el avance se perdería en silencio. */
 function huella(a){
-  return [a && a.folio, a && a.fecha, a && a.linea, a && a.proveedor,
-          a && a.encargado, a && a.verificador, a && a.paso,
+  return [a && a.folio, a && a.fecha, a && a.proveedor, a && a.email,
+          a && a.verificador, a && a.paso,
           /* Se incluyen los campos de la partida (ya sin `sicar`): si se dejara
              fuera alguno, capturarlo no cambiaría la huella y el aviso de
              "sin guardar" no aparecería (y el usuario perdería el dato al salir). */
