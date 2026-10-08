@@ -500,10 +500,13 @@ function resumen(list){
   });
   /* Totales para ajustar inventario. Solo tienen valor como ajuste cuando la
      recepción fue conforme: si Dif. recep. != 0, lo recibido no cuadra con la
-     factura y la suma no debe usarse para mover existencias. */
+     factura y la suma no debe usarse para mover existencias.
+     NOTA: el campo `aud` (número de auditorías) se retiró del resultado: solo lo
+     consumía la tabla "Resumen general" del PDF, que ya no existe. El resto de las
+     cifras siguen alimentando el Paso 5, el Historial y `bloqueAjuste()`. */
   const recepcionConforme = (falt===0 && sobr===0);
   const totalAjuste = recib + real;
-  return {aud:list.length,part,hall,falt,sobr,fact,recib,real,realPV,realBR,recepcionConforme,totalAjuste};
+  return {part,hall,falt,sobr,fact,recib,real,realPV,realBR,recepcionConforme,totalAjuste};
 }
 
 /* ===== Pasos, en el orden obligatorio de captura ===== */
@@ -2091,30 +2094,13 @@ function crearPDF(list,titulo){
   d.setFont("helvetica","normal"); d.setFontSize(10);
   d.text(titulo,M,50); d.text("Emitido: "+new Date().toLocaleString("es-MX"),W-M,50,{align:"right"});
   d.setTextColor(27,36,48);
-  const r=resumen(list); let y=96;
-  d.setFont("helvetica","bold"); d.setFontSize(12); d.text("Resumen general",M,y); y+=8;
-  d.autoTable({startY:y,margin:{left:M,right:M},theme:"grid",styles:{fontSize:9,cellPadding:5},headStyles:{fillColor:[31,92,122]},
-    head:[["Auditorías","Partidas","Con hallazgo","Faltantes en recepción","Sobrantes en recepción"]],
-    body:[[r.aud,r.part,r.hall,r.falt,r.sobr]]});
-  y=d.lastAutoTable.finalY+24;
-  /* Conteo total para ajuste de inventario: solo se marca utilizable si
-     Dif. recep. no tiene diferencias en ninguna partida del reporte. */
-  d.setFont("helvetica","bold"); d.setFontSize(12); d.text("Conteo total para ajuste de inventario",M,y); y+=8;
-  d.autoTable({startY:y,margin:{left:M,right:M},theme:"grid",styles:{fontSize:9,cellPadding:5},
-    headStyles:{fillColor:r.recepcionConforme?[42,122,75]:[179,57,27]},
-    head:[["Total facturado","Total recibido","Total real en anaquel","Recibido + Real","¿Apto para ajuste?"]],
-    body:[[r.fact,r.recib,r.real,r.totalAjuste,r.recepcionConforme?"Sí (Dif. recep. = 0)":"No (Dif. recep. != 0)"]],
-    columnStyles:{0:{halign:"right"},1:{halign:"right"},2:{halign:"right"},3:{halign:"right"}}});
-  y=d.lastAutoTable.finalY+10;
-  d.setFont("helvetica","italic"); d.setFontSize(8);
-  /* La sugerencia de ajuste ya NO cita la diferencia contra SICAR: ese paso se
-     eliminó y el conteo total (recibido + real) es la única cifra del reporte. */
-  if(r.recepcionConforme){
-    d.text(`Ajuste sugerido: fijar la existencia en ${r.totalAjuste} piezas (real + recibido).`,M,y+8);
-  }else{
-    d.text(`No usar para ajuste: hay diferencias de recepción (faltantes: ${r.falt}, sobrantes: ${r.sobr}). Aclare la recepción primero.`,M,y+8);
-  }
-  y+=30;
+  /* El reporte solo lleva la tabla de artículos auditados de cada folio: se
+     eliminaron las tablas "Resumen general" y "Conteo total para ajuste de
+     inventario" (y sus textos y notas) porque repetían, fuera de contexto, las
+     cifras de cada auditoría. Se conserva el encabezado del reporte, el encabezado
+     de cada folio con la línea Responsable/Verificó, la tabla de artículos y las
+     firmas. La lista de folios empieza justo bajo el encabezado. */
+  let y=90;
   list.forEach((a)=>{
     if(y>H-200){d.addPage();y=50;}
     d.setFont("helvetica","bold"); d.setFontSize(11);
@@ -2126,24 +2112,7 @@ function crearPDF(list,titulo){
       body:a.partidas.map(p=>[p.codigo,p.desc,p.fact,p.recib,fmt(dR(p)),p.realPV===""?"—":p.realPV,p.realBR===""?"—":p.realBR,p.real,resultado(p)]),
       columnStyles:{2:{halign:"right"},3:{halign:"right"},4:{halign:"right"},5:{halign:"right"},6:{halign:"right"},7:{halign:"right"}},
       didParseCell:h=>{ if(h.section==="body"&&h.row.raw[8]!=="Conforme"){h.cell.styles.fillColor=[251,234,229];} }});
-    y=d.lastAutoTable.finalY+10;
-    /* Conteo por folio, con la misma regla: usar la suma solo si Dif. recep. = 0.
-       Se divide en dos líneas porque el aviso supera el ancho útil de la página. */
-    const ra=resumen([a]);
-    d.setFont("helvetica","bold"); d.setFontSize(9);
-    if(ra.recepcionConforme){
-      d.setTextColor(42,122,75);
-      d.text(`Conteo total para ajuste: recibido ${ra.recib} + real ${ra.real} = ${ra.totalAjuste} piezas.`,M,y);
-      d.setFont("helvetica","normal");
-      d.text("Dif. recep. sin diferencias: la suma es confiable para ajustar el inventario.",M,y+11);
-    }else{
-      d.setTextColor(179,57,27);
-      d.text(`Conteo total informativo: recibido ${ra.recib} + real ${ra.real} = ${ra.totalAjuste} piezas.`,M,y);
-      d.setFont("helvetica","normal");
-      d.text(`NO usar para ajuste: Dif. recep. con diferencias (faltantes ${ra.falt}, sobrantes ${ra.sobr}). Aclare la recepción.`,M,y+11);
-    }
-    d.setTextColor(27,36,48);
-    y+=40;
+    y=d.lastAutoTable.finalY+26;
     if(y>H-70){d.addPage();y=90;}
     d.setDrawColor(27,36,48); d.setFontSize(8);
     [[a.email||a.encargado||"","Responsable"],[a.verificador,"Verificador"],["","Gerencia"]].forEach((s,i)=>{

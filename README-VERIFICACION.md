@@ -129,7 +129,7 @@ El paso **«Existencia en SICAR»** se eliminó por completo, junto con su colum
 | 2 | Partidas facturadas | Código, descripción y cantidad facturada |
 | 3 | Recepción física | Cantidad recibida (y su diferencia contra la factura) |
 | 4 | Conteo en anaquel | Verificador (automático: el correo de la sesión) y existencia real contada **por división**: PV (Piso de Ventas) y BR (Bodega) |
-| 5 | Hallazgos y reporte | Resumen, conteo para ajuste y descarga del PDF |
+| 5 | Hallazgos y reporte | Diferencias calculadas y descarga del PDF |
 
 Cada partida se guarda con **seis campos**: `codigo`, `desc`, `fact`, `recib`,
 `realPV`, `realBR` y `real`. En el Paso 4 el verificador captura **dos cantidades
@@ -205,8 +205,11 @@ Paso 5 por clics reales, contenido de `resumen()`/`resultado()` (con totales PV 
 separados), persistencia del documento normalizado, degradación y **migración** de
 documentos antiguos (paso 6 con `sicar`, o con un `real` único), **el autoguardado**
 (respaldo local inmediato, guardado silencioso y aviso que ya no alarma), botón
-«Empezar otro folio» y el PDF con las columnas Real PV / Real BR / Real total y sin
-columnas SICAR / «Dif. sistema».
+«Empezar otro folio» y el PDF, que ahora trae **solo la tabla de artículos** de cada
+folio (con las columnas Real PV / Real BR / Real total y sin columnas SICAR /
+«Dif. sistema»): ya no incluye las tablas «Resumen general» ni «Conteo total para
+ajuste de inventario». Se prueba el PDF con **1 partida**, con **muchas partidas**
+(obliga a saltar de página), con una **auditoría vieja** y en el **reporte del día**.
 
 ## Lectura vs escritura
 

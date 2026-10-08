@@ -399,16 +399,29 @@ sandbox.jspdf = { jsPDF: function () {
 sandbox.jsPDF = sandbox.jspdf.jsPDF;
 app.crearPDF([A], "Prueba");
 ok(pdf.guardado.indexOf("hallazgos_folio_A-9912_") === 0, "el PDF se genera: " + pdf.guardado);
-ok(pdf.tablas.length === 3, "el PDF trae 3 tablas (resumen, ajuste y partidas): " + pdf.tablas.length);
+/* El PDF quedó con UNA sola tabla: la de artículos auditados. Se quitaron las
+   tablas "Resumen general" y "Conteo total para ajuste de inventario". */
+ok(pdf.tablas.length === 1, "el PDF trae solo la tabla de artículos: " + pdf.tablas.length);
 const cabeceras = pdf.tablas.map(t => t.head.join(" | ")).join(" ;; ");
 ok(!/SICAR/.test(cabeceras) && !/Dif\. sistema/.test(cabeceras),
    "ninguna tabla del PDF tiene SICAR ni 'Dif. sistema'");
+ok(!/Auditorías/.test(cabeceras) && !/Recibido \+ Real/.test(cabeceras),
+   "el PDF ya no trae las tablas Resumen general ni Conteo para ajuste: " + cabeceras);
 ok(!/SICAR/i.test(pdf.textos.join(" ")), "ningun texto del PDF cita SICAR");
+/* Ya no aparecen los títulos de las tablas retiradas ni las notas de ajuste. */
+const textosPlano = pdf.textos.join(" ");
+ok(!/Resumen general/.test(textosPlano), "el PDF ya no imprime el título 'Resumen general'");
+ok(!/Conteo total para ajuste de inventario/.test(textosPlano),
+   "el PDF ya no imprime el título 'Conteo total para ajuste de inventario'");
+ok(!/Ajuste sugerido/.test(textosPlano) && !/No usar para ajuste/.test(textosPlano),
+   "el PDF ya no imprime las notas de ajuste");
 /* El PDF ya no dice "Línea X": ahora nombra al Responsable (email de sesión o,
    si el documento es viejo, su `encargado`). */
 const textosPDF = pdf.textos.join(" \u0001 ");
 ok(!/\bL\u00ednea\b/.test(textosPDF), "el PDF ya no imprime 'Línea'");
 ok(/Responsable/.test(textosPDF), "el PDF etiqueta al responsable: " + resultadosPDF(textosPDF));
+ok(/Verificó/.test(textosPDF), "el PDF conserva la línea con Verificó");
+ok(/Página 1 de/.test(textosPDF), "el PDF conserva el pie de página");
 function resultadosPDF(t){ return String(t).split("\u0001").filter(s => /Responsable/.test(s)).join(" | ").slice(0, 160); }
 const detalle = pdf.tablas.filter(t => /C\u00f3digo/.test(t.head.join("")))[0];
 ok(!!detalle && detalle.head.join("|") === "C\u00f3digo|Descripci\u00f3n|Fact.|Recib.|Dif. recep.|Real PV|Real BR|Real total|Resultado",
@@ -418,6 +431,67 @@ let c = celda(8); c.row.raw[8] = "Faltante en recepci\u00f3n"; detalle.resalta(c
 ok(Array.isArray(c.cell.styles.fillColor), "un hallazgo pinta la fila usando el indice 8 (Resultado)");
 c = celda(8); c.row.raw[8] = "Conforme"; detalle.resalta(c);
 ok(!c.cell.styles.fillColor, "una partida conforme no se pinta");
+/* --- PDF: 1 partida, muchas partidas (varias páginas) y auditoría VIEJA ---
+   Se rearma el espía para contar páginas y tablas de cada corrida. */
+const correrPDF = (docs, titulo) => {
+  const spy = { tablas: [], textos: [], guardado: "", paginas: 1, addPage: 0 };
+  sandbox.jspdf = { jsPDF: function () {
+    const api = {
+      internal: { pageSize: { getWidth: () => 612, getHeight: () => 792 } },
+      lastAutoTable: { finalY: 300 },
+      setFillColor() {}, rect() {}, setTextColor() {}, setFont() {}, setFontSize() {},
+      setDrawColor() {}, line() {},
+      addPage() { spy.addPage++; spy.paginas++; api.lastAutoTable = { finalY: 100 }; },
+      setPage() {}, getNumberOfPages: () => spy.paginas,
+      text: t => { spy.textos.push(String(t)); },
+      /* Cada fila avanza el cursor ~20pt: así un folio con muchas partidas empuja
+         el `y` más allá del alto de página y se ejercita el salto de página. */
+      autoTable: o => { spy.tablas.push({ head: o.head[0], filas: o.body.length });
+        api.lastAutoTable = { finalY: (o.startY || 100) + o.body.length * 20 }; },
+      save: n => { spy.guardado = n; }
+    };
+    return api;
+  } };
+  sandbox.jsPDF = sandbox.jspdf.jsPDF;
+  app.crearPDF(docs, titulo);
+  return spy;
+};
+
+/* (a) Una sola partida: sin errores, una tabla y el encabezado/sello del folio. */
+const spyUna = correrPDF([Object.assign({}, A)], "Prueba 1 partida");
+ok(spyUna.tablas.length === 1 && spyUna.tablas[0].filas === 1,
+   "PDF con 1 partida: una tabla de 1 fila");
+ok(/Folio A-9912/.test(spyUna.textos.join(" ")), "PDF con 1 partida: incluye el encabezado del folio");
+
+/* (b) Muchas partidas: obliga a saltar de página y no debe lanzar excepción. */
+const muchas = app.normalizar({
+  id: "muchas", fecha: "2026-09-01", folio: "M-1", proveedor: "P", email: "e@e.mx", verificador: "V", paso: 5,
+  partidas: Array.from({ length: 60 }, (_, i) => ({ codigo: "C-" + i, desc: "Art " + i, fact: "10", recib: "10", realPV: "5", realBR: "5", real: "10" }))
+});
+const spyMuchas = correrPDF([muchas], "Prueba muchas partidas");
+ok(spyMuchas.tablas.length === 1 && spyMuchas.tablas[0].filas === 60,
+   "PDF con muchas partidas: una tabla de 60 filas");
+ok(spyMuchas.addPage >= 1, "PDF con muchas partidas: salta de página (" + spyMuchas.addPage + ")");
+ok(/Página 1 de/.test(spyMuchas.textos.join(" ")), "PDF con muchas partidas: numera las páginas");
+
+/* (c) Auditoría VIEJA (con linea/encargado y sin verificador): no debe romper y
+   debe usar `encargado` como responsable. */
+const viejoPDF = app.normalizar({ id: "vp", fecha: "2026-09-01", linea: "Chevrolet", encargado: "Luis",
+  folio: "V-9", proveedor: "P", paso: 5, partidas: [{ codigo: "C", desc: "D", fact: "5", recib: "5", real: "5" }] });
+const spyViejo = correrPDF([viejoPDF], "Prueba auditoría vieja");
+ok(spyViejo.tablas.length === 1, "PDF de auditoría vieja: una sola tabla");
+ok(/Luis/.test(spyViejo.textos.join(" ")), "PDF de auditoría vieja: usa `encargado` como responsable");
+ok(!/Resumen general/.test(spyViejo.textos.join(" ")) && !/Conteo total para ajuste de inventario/.test(spyViejo.textos.join(" ")),
+   "PDF de auditoría vieja: tampoco imprime las tablas retiradas");
+
+/* (d) Reporte del DÍA (varios folios): conserva el encabezado y una tabla por folio. */
+const dia1 = app.normalizar({ id: "d1", fecha: "2026-09-01", folio: "D1", proveedor: "P1", email: "e@e.mx", verificador: "V", paso: 5, partidas: [{ codigo: "C1", desc: "A", fact: "1", recib: "1", real: "1" }] });
+const dia2 = app.normalizar({ id: "d2", fecha: "2026-09-01", folio: "D2", proveedor: "P2", email: "e@e.mx", verificador: "V", paso: 5, partidas: [{ codigo: "C2", desc: "B", fact: "2", recib: "2", real: "2" }] });
+const spyDia = correrPDF([dia1, dia2], "Reporte del día 2026-09-01");
+ok(spyDia.tablas.length === 2, "PDF del día: una tabla por folio (" + spyDia.tablas.length + ")");
+ok(spyDia.guardado.indexOf("hallazgos_dia_2026-09-01") === 0, "PDF del día: nombre de archivo correcto: " + spyDia.guardado);
+
+
 
 /* --- Navegacion real: clic en "Guardar y continuar" por los cinco pasos ---
    Se llama al manejador de clics real de la app con un botón simulado, dentro
