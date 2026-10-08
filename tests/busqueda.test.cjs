@@ -21,6 +21,7 @@ function registros() {
       linea: "Volkswagen",
       folio: "A-9912",
       proveedor: "Refaccionaria del Norte",
+      email: "ana.lopez@ejemplo.mx",
       encargado: "Ana",
       verificador: "Beto",
       partidas: [
@@ -50,6 +51,7 @@ function registros() {
       linea: "Chevrolet",
       folio: "C-0042",
       proveedor: "Autopartes Poniente",
+      email: "carlos.ruiz@ejemplo.mx",
       encargado: "Carlos",
       verificador: "Diana",
       partidas: [
@@ -222,4 +224,18 @@ test("búsqueda por folio y por línea/marca", () => {
 
   assert.equal(buscarRegistros(registros(), "a-9912")[0].registro.id, "a1");
   assert.equal(buscarRegistros(registros(), "chevrolet")[0].registro.id, "a2");
+});
+
+test("búsqueda por el responsable (email de la sesión)", () => {
+  const { buscarRegistros } = casos;
+  /* El responsable ya no se captura: vive en `email`. La búsqueda debe hallarlo
+     tanto por el correo completo como por una parte (p. ej. el usuario). */
+  assert.equal(buscarRegistros(registros(), "ana.lopez@ejemplo.mx")[0].registro.id, "a1");
+  assert.equal(buscarRegistros(registros(), "carlos.ruiz")[0].registro.id, "a2");
+  assert.equal(buscarRegistros(registros(), "ANA.LOPEZ").length, 1);
+  /* Un documento VIEJO sin `email` sigue encontrándose por `linea`/`encargado`. */
+  const viejo = [{ id: "v", fecha: "2026-10-07", linea: "Chevrolet", folio: "V-1",
+    proveedor: "P", encargado: "Luis", verificador: "V", partidas: [] }];
+  assert.equal(buscarRegistros(viejo, "chevrolet").length, 1);
+  assert.equal(buscarRegistros(viejo, "luis").length, 1);
 });

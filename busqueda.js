@@ -152,7 +152,9 @@ export function interpretarFecha(termino) {
    UNA vez por registro (no en cada pulsación) porque normalizar es lo caro.
    Devuelve:
      - `cabecera`: array de textos de cabecera (fecha, línea, folio, proveedor,
-       encargado, verificador).
+       email del responsable, encargado, verificador). `linea` y `encargado` se
+       mantienen porque las auditorías VIEJAS todavía los traen (las nuevas no);
+       `email` es el responsable automático de la sesión.
      - `fechaISO`: la fecha del registro tal cual (para comparar fechas).
      - `partidas`: array de {codigo, desc, extras[]} con los textos de cada
        partida (incluye las cantidades como texto). `extras` reúne el resto de
@@ -165,6 +167,7 @@ export function prepararRegistro(a) {
     normalizarTexto(r.linea),
     normalizarTexto(r.folio),
     normalizarTexto(r.proveedor),
+    normalizarTexto(r.email),
     normalizarTexto(r.encargado),
     normalizarTexto(r.verificador)
   ];

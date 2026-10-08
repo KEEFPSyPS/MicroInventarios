@@ -1063,7 +1063,7 @@ async function renderHist(){
     let html;
     try{
       const r=resumen([a]);
-      html = `<tr><td>${esc(a.fecha)}</td><td>${esc(a.linea)}</td><td>${esc(a.folio)}${completa(a)?"":`<span class="avance">En captura · Paso ${Math.min(ULTIMO,Math.max(1,num(a.paso)||1))}</span>`}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"—"}</td><td class="row"><button class="btn ${completa(a)?"sec":""}" data-open="${esc(a.id)}">${completa(a)?"Abrir":"Reanudar"}</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
+      html = `<tr><td>${esc(a.fecha)}</td><td>${esc(a.email||a.encargado||"")}</td><td>${esc(a.folio)}${completa(a)?"":`<span class="avance">En captura · Paso ${Math.min(ULTIMO,Math.max(1,num(a.paso)||1))}</span>`}</td><td>${esc(a.proveedor)}</td><td class="n">${completa(a)?r.hall:"—"}</td><td class="row"><button class="btn ${completa(a)?"sec":""}" data-open="${esc(a.id)}">${completa(a)?"Abrir":"Reanudar"}</button><button class="btn sec" data-pdf="${esc(a.id)}" ${completa(a)?"":"disabled"}>PDF</button><button class="btn del" data-rm="${esc(a.id)}">Eliminar</button></td></tr>`;
     }catch(e){
       html = `<tr><td colspan="6">Registro con datos incompletos (id ${esc(a&&a.id)}). Ábrelo para corregirlo o elíminalo.</td></tr>`;
     }
@@ -1104,7 +1104,7 @@ async function renderHist(){
       <span id="buscarCuenta" class="buscador-cuenta" role="status" aria-live="polite" aria-atomic="true"></span>
     </div>
     <p class="hint mb-10">Al abrir una auditoría puedes capturar el folio <strong>a mano</strong> o cargar el <strong>XML/PDF</strong> de la factura.</p>
-    <div class="tw"><table><caption class="sr">Historial de auditorías</caption><thead><tr><th scope="col">Fecha</th><th scope="col">Línea</th><th scope="col">Folio</th><th scope="col">Proveedor</th><th scope="col" class="n">Hallazgos</th><th scope="col"><span class="sr">Acciones</span></th></tr></thead>
+    <div class="tw"><table><caption class="sr">Historial de auditorías</caption><thead><tr><th scope="col">Fecha</th><th scope="col">Responsable</th><th scope="col">Folio</th><th scope="col">Proveedor</th><th scope="col" class="n">Hallazgos</th><th scope="col"><span class="sr">Acciones</span></th></tr></thead>
     <tbody id="histCuerpo"></tbody>
     </table></div></div>${msg?`<div class="msg">${esc(msg)}</div>`:""}`;
   /* Repinta SOLO el cuerpo de la tabla y el contador. Así el input no pierde el
@@ -1879,9 +1879,9 @@ function crearPDF(list,titulo){
   list.forEach((a)=>{
     if(y>H-200){d.addPage();y=50;}
     d.setFont("helvetica","bold"); d.setFontSize(11);
-    d.text(`Folio ${a.folio} | ${a.proveedor} | Línea ${a.linea} | ${a.fecha}`,M,y);
+    d.text(`Folio ${a.folio} | ${a.proveedor} | Responsable ${a.email||a.encargado||"—"} | ${a.fecha}`,M,y);
     d.setFont("helvetica","normal"); d.setFontSize(9);
-    d.text(`Recibió: ${a.encargado}    Verificó: ${a.verificador}`,M,y+13);
+    d.text(`Responsable: ${a.email||a.encargado||"—"}    Verificó: ${a.verificador}`,M,y+13);
     d.autoTable({startY:y+20,margin:{left:M,right:M},theme:"grid",styles:{fontSize:8,cellPadding:4},headStyles:{fillColor:[31,92,122]},
       head:[["Código","Descripción","Fact.","Recib.","Dif. recep.","Real PV","Real BR","Real total","Resultado"]],
       body:a.partidas.map(p=>[p.codigo,p.desc,p.fact,p.recib,fmt(dR(p)),p.realPV===""?"—":p.realPV,p.realBR===""?"—":p.realBR,p.real,resultado(p)]),
@@ -1907,7 +1907,7 @@ function crearPDF(list,titulo){
     y+=40;
     if(y>H-70){d.addPage();y=90;}
     d.setDrawColor(27,36,48); d.setFontSize(8);
-    [[a.encargado,"Encargado de recepción"],[a.verificador,"Verificador"],["","Gerencia"]].forEach((s,i)=>{
+    [[a.email||a.encargado||"","Responsable"],[a.verificador,"Verificador"],["","Gerencia"]].forEach((s,i)=>{
       const x=M+i*175; d.line(x,y,x+150,y); d.text(s[0]||" ",x,y+11); d.text(s[1],x,y+22);
     });
     y+=52;

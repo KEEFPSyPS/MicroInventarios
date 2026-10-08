@@ -59,7 +59,7 @@ function nodo(id) {
     id, _html: "", textContent: "", value: "", hidden: false, disabled: false,
     files: [], isConnected: true, dataset: {},
     classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
-    insertAdjacentHTML() {}, querySelector: () => null, addEventListener() {},
+    insertAdjacentHTML() {}, querySelector: () => null, querySelectorAll: () => [], addEventListener() {},
     getAttribute: () => "", setAttribute() {}
   });
   nodos[id] = n;
@@ -95,7 +95,7 @@ vm.runInContext([
   "var nodo = id => { if (nodos[id]) return nodos[id]; const n = Object.create(nodos.__proto__);",
   "  Object.assign(n, {id, _html:'', textContent:'', value:'', hidden:false, disabled:false,",
   "    files:[], isConnected:true, dataset:{}, classList:{toggle(){},add(){},remove(){},contains:()=>false},",
-  "    insertAdjacentHTML(){}, querySelector:()=>null, addEventListener(){},",
+  "    insertAdjacentHTML(){}, querySelector:()=>null, querySelectorAll:()=>[], addEventListener(){},",
   "    getAttribute:()=>'', setAttribute(){}}); nodos[id]=n; return n; };",
   "var document = { get app(){ return nodo('app'); }, getElementById: id => nodo(id),",
   /* La app llama a querySelector('#app'), querySelector('[data-d=\"0\"]'), etc.
@@ -122,6 +122,7 @@ vm.runInContext(code, sandbox, { filename: "index.html" });
 vm.runInContext([
   "globalThis.app = { ULTIMO, PASOS, completa, resumen, resultado, normalizar, guardable, blank,",
   "  huella, hayAvance, botonOtroFolio, bloqueAjuste, paso, render, crearPDF, A, sumarReal,",
+  "  renderHist: () => renderHist(),",
   "  textoIndicador, texto: () => nodo('app').innerHTML, estado: () => ({vista, msg}), cloud,",
   "  autoguardar: () => globalThis.__auto(), programar: () => globalThis.__programar(),",
   "  intentos: () => globalThis.__intentos, aviso: () => avisoSinGuardar() };",
@@ -302,6 +303,12 @@ const cabeceras = pdf.tablas.map(t => t.head.join(" | ")).join(" ;; ");
 ok(!/SICAR/.test(cabeceras) && !/Dif\. sistema/.test(cabeceras),
    "ninguna tabla del PDF tiene SICAR ni 'Dif. sistema'");
 ok(!/SICAR/i.test(pdf.textos.join(" ")), "ningun texto del PDF cita SICAR");
+/* El PDF ya no dice "Línea X": ahora nombra al Responsable (email de sesión o,
+   si el documento es viejo, su `encargado`). */
+const textosPDF = pdf.textos.join(" \u0001 ");
+ok(!/\bL\u00ednea\b/.test(textosPDF), "el PDF ya no imprime 'Línea'");
+ok(/Responsable/.test(textosPDF), "el PDF etiqueta al responsable: " + resultadosPDF(textosPDF));
+function resultadosPDF(t){ return String(t).split("\u0001").filter(s => /Responsable/.test(s)).join(" | ").slice(0, 160); }
 const detalle = pdf.tablas.filter(t => /C\u00f3digo/.test(t.head.join("")))[0];
 ok(!!detalle && detalle.head.join("|") === "C\u00f3digo|Descripci\u00f3n|Fact.|Recib.|Dif. recep.|Real PV|Real BR|Real total|Resultado",
    "la tabla por partida tiene 9 columnas con Real PV, Real BR y Real total en orden: " + (detalle ? detalle.head.join(" | ") : "sin tabla"));
@@ -343,6 +350,16 @@ vm.runInContext([
 });
 
 test("navegación por clics, guardado local y autoguardado", async () => {
+  /* --- Historial: encabezado con Responsable (ya no Línea) ---
+     renderHist() lee store.all() (en el test, getDocs devuelve vacío → tabla sin
+     filas, pero con el encabezado). Se comprueba que la columna de Línea se
+     reemplazó por Responsable, el dato que ahora existe en los documentos. */
+  await app.renderHist();
+  const histHTML = app.texto();
+  ok(/Historial y reportes/.test(histHTML), "el Historial se pinta");
+  ok(/<th scope="col">Responsable<\/th>/.test(histHTML) && !/<th scope="col">L\u00ednea<\/th>/.test(histHTML),
+     "el Historial cambia la columna Línea por Responsable");
+
   const termino = await sandbox.__ir();
   ok(termino === 5, "el avance por clics llegó al paso " + termino + " (pasos: " + sandbox.__pasos.join(",") + ")");
   ok(A.paso === 5 && app.completa(A), "tras avanzar, el documento está completo en el paso 5");
