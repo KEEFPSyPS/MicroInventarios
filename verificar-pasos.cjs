@@ -165,6 +165,7 @@ vm.runInContext(code, sandbox, { filename: "index.html" });
 vm.runInContext([
   "globalThis.app = { ULTIMO, PASOS, completa, resumen, resultado, normalizar, guardable, blank,",
   "  huella, hayAvance, botonOtroFolio, bloqueAjuste, paso, render, crearPDF, A, sumarReal,",
+  "  sincronizarVerificador,",
   "  renderHist: () => renderHist(),",
   "  procesarLoteXML, auditoriaDesdeCFDI, claveFacturaDe, partidasDeCFDI, extraerXML,",
   "  textoIndicador, texto: () => nodo('app').innerHTML, estado: () => ({vista, msg}), cloud,",
@@ -178,7 +179,7 @@ vm.runInContext([
 const app = sandbox.app;
 const A = app.A;
 
-test("arranque y modelo de pasos (PV/BR, sin SICAR)", () => {
+test("arranque y modelo de pasos (PV/BR, sin SICAR)", async () => {
 ok(app.cloud === true, "la app arrancó en modo nube (con la config del test)");
 ok(typeof app.texto() === "string", "el DOM mínimo responde al render (largo " + app.texto().length + ")");
 
@@ -290,6 +291,62 @@ ok(app.sumarReal({ realPV: "", realBR: "" }) === "",
    "sumarReal() deja el total vacío si no hay conteo en ninguna división");
 ok(app.sumarReal({ realPV: "4", realBR: "" }) === "4",
    "sumarReal() toma solo PV si BR está vacío (parte no contada en Bodega)");
+
+/* --- Verificador automático (Paso 4): sale de la sesión, ya no se captura ---
+   El verificador se autocompleta con el correo de quien tiene la sesión abierta,
+   solo si está vacío, y se fija antes de guardar/avanzar para que quede en el PDF.
+   Una auditoría VIEJA con su verificador escrito a mano lo conserva. */
+
+/* UI: el campo es de solo lectura y muestra el correo de la sesión. */
+ok(/Verificador/.test(p4) && /readonly/.test(p4) && /prueba@ejemplo\.mx/.test(p4),
+   "el Paso 4 muestra el Verificador de la sesión como solo lectura");
+ok(!/data-f="verificador"/.test(p4),
+   "el Paso 4 ya no expone el Verificador como campo editable (data-f)");
+
+/* El Paso 4 avanza con solo PV/BR: sin verificador sigue ok. */
+ok(app.PASOS[3].ok({ partidas: [{ realPV: "4", realBR: "3" }] }) === true,
+   "el Paso 4 se da por ok con PV y BR aunque no haya verificador");
+ok(app.PASOS[3].ok({ verificador: "", partidas: [{ realPV: "4", realBR: "3" }] }) === true,
+   "el Paso 4 se da por ok con el verificador vacío");
+
+/* huella() detecta el cambio del verificador → el autoguardado se dispara.
+   Se comprueban dos documentos idénticos salvo por el verificador. */
+const baseHuella = { folio: "F-1", fecha: "2026-05-05", proveedor: "P", email: "e", paso: 4,
+  partidas: [{ codigo: "C", desc: "D", fact: "1", recib: "1", realPV: "1", realBR: "0", real: "1" }] };
+const conVerif = Object.assign({}, baseHuella, { verificador: "prueba@ejemplo.mx" });
+const sinVerif = Object.assign({}, baseHuella, { verificador: "" });
+ok(app.huella(conVerif) !== app.huella(sinVerif),
+   "huella() cambia cuando se fija el verificador (dispara el autoguardado)");
+
+/* Autocompletado y respeto del valor guardado. Se prueba sobre una copia LOCAL del
+   documento para no alterar la auditoría A que usan las pruebas siguientes. */
+const rVerif = await vm.runInContext(
+  "(function(){" +
+  "  const respaldo = A;" +
+  "  const out = {};" +
+  /* 1) Con sesión y verificador vacío → toma el correo de la sesión. */
+  "  A = blank(); A.verificador = ''; sincronizarVerificador(); out.conSesion = A.verificador;" +
+  /* 2) No pisa un verificador ya escrito (auditoría vieja / ya verificada). */
+  "  A.verificador = 'Ana'; sincronizarVerificador(); out.respetado = A.verificador;" +
+  /* 3) Sin sesión no hay correo que asignar: queda vacío y no falla. */
+  "  const u = usuario; usuario = null;" +
+  "  A = blank(); A.verificador = ''; sincronizarVerificador(); out.sinSesion = A.verificador;" +
+  /* 4) Sin sesión el Paso 4 sigue avanzando con solo PV/BR. */
+  "  out.pasoOkSinSesion = PASOS[3].ok({ partidas: [{ realPV: '4', realBR: '3' }] });" +
+  "  usuario = u;" +
+  "  A = respaldo;" +
+  "  return JSON.stringify(out);" +
+  "})()", sandbox);
+const vv = JSON.parse(rVerif);
+ok(vv.conSesion === "prueba@ejemplo.mx",
+   "sincronizarVerificador() completa el verificador con el correo de la sesión");
+ok(vv.respetado === "Ana",
+   "sincronizarVerificador() NO pisa un verificador ya guardado");
+ok(vv.sinSesion === "",
+   "sin sesión sincronizarVerificador() deja el verificador vacío sin fallar");
+ok(vv.pasoOkSinSesion === true,
+   "sin sesión el Paso 4 sigue avanzando con solo PV/BR");
+
 
 /* --- Resumen, resultado y bloque de ajuste --- */
 const r = app.resumen([A]);

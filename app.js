@@ -452,7 +452,9 @@ const linea0 = ()=>({codigo:"",desc:"",fact:"",recib:"",realPV:"",realBR:"",real
    (usuario.email) y se persiste en `email`, que firestore.rules valida contra el
    token (d.email == request.auth.token.email). Por eso `blank()` no crea los
    campos `linea` ni `encargado`: las auditorías NUEVAS no los escriben (las
-   VIEJAS que sí los traen se siguen leyendo; ver normalizar()). */
+   VIEJAS que sí los traen se siguen leyendo; ver normalizar()).
+   `verificador` sí nace vacío aquí, pero tampoco se captura a mano: se completa
+   solo con el correo de la sesión al entrar al Paso 4 (ver sincronizarVerificador()). */
 const blank = ()=>({id:uid(),fecha:hoy(),proveedor:"",folio:"",email:"",verificador:"",partidas:[linea0()],paso:1,creado:Date.now()});
 const dR = p=>num(p.recib)-num(p.fact);
 /* Existencia real total = Piso de Ventas + Bodega. Se recalcula SIEMPRE desde las
@@ -514,11 +516,30 @@ const PASOS = [
   {t:"Datos de la factura", ok:a=>!!(a.fecha&&String(a.proveedor||"").trim()&&String(a.folio||"").trim())},
   {t:"Partidas facturadas", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&String(p.codigo||"").trim()&&String(p.desc||"").trim()&&num(p.fact)>0)}},
   {t:"Recepción física", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&p.recib!=="")}},
-  {t:"Conteo en anaquel", ok:a=>{const ps=partidasSeguras(a);return !!String(a.verificador||"").trim()&&ps.length>0&&ps.every(p=>p&&p.realPV!==""&&p.realBR!=="")}},
+  /* El verificador YA NO se captura ni se exige: sale del correo de la sesión y
+     se autocompleta al entrar al Paso 4 (ver sincronizarVerificador()). Se dejó de
+     pedir como requisito para que el paso avance con solo el conteo PV/BR; una
+     auditoría vieja que ya lo traiga escrito lo conserva. */
+  {t:"Conteo en anaquel", ok:a=>{const ps=partidasSeguras(a);return ps.length>0&&ps.every(p=>p&&p.realPV!==""&&p.realBR!=="")}},
   {t:"Hallazgos y reporte", ok:()=>true}
 ];
 const ULTIMO = PASOS.length; /* 5: se usa en las guardas de paso en lugar de un 6 fijo */
 const puede = (a,n)=>PASOS.slice(0,n-1).every(p=>p.ok(a));
+
+/* El verificador del Paso 4 sale de la sesión, igual que el Responsable del Paso 1:
+   NO se captura a mano. Se autocompleta con el correo de quien tiene la sesión
+   abierta, y SOLO si el documento aún no trae un verificador escrito; así una
+   auditoría vieja (o una que ya se verificó) conserva su dato y no se pisa.
+   El verificador se asigna ANTES de guardar/avanzar (ver render() y guardar())
+   para que quede persistido aunque el usuario no escriba nada en el paso.
+   Sin sesión no hay correo que asignar: el campo se deja como esté (vacío en una
+   auditoría nueva) y el Paso 4 avanza igual, porque ya no se exige para continuar. */
+function sincronizarVerificador(){
+  if(!A) return;
+  if(String(A.verificador||"").trim()) return;
+  const correo = (usuario && usuario.email) || "";
+  if(correo) A.verificador = correo;
+}
 
 let A = blank(), vista = "nueva", msg = "";
 /* Se activa si al normalizar hubo que recortar partidas sobrantes (>20). */
@@ -564,6 +585,9 @@ function normalizar(a){
   a.folio = txt(a.folio, 60);
   a.proveedor = txt(a.proveedor, 120);
   a.verificador = txt(a.verificador, 120);
+  /* `verificador` sale de la sesión (ver sincronizarVerificador()), pero se
+     normaliza igual: una auditoría VIEJA con un verificador escrito a mano lo
+     conserva, y las reglas exigen que sea string de hasta 120 caracteres. */
   /* `linea` y `encargado` son OPCIONALES (ver firestore.rules → lineaValida() y
      encargadoValido()). La app ya no los captura, así que un documento NUEVO no
      debe escribirlos. Solo se CONSERVAN si vienen de una auditoría VIEJA con un
@@ -656,6 +680,10 @@ function guardableBorrador(a){
 
 async function guardar(){
   avisoLimite = false;
+  /* El verificador se fija ANTES de persistir: si el usuario avanzó al Paso 5 sin
+     tocar el campo, el paso que acaba de cerrar ya queda con el correo de la sesión
+     guardado (y sale así en el PDF). Solo rellena si estaba vacío. */
+  sincronizarVerificador();
   A = normalizar(A);
   A.paso = Math.max(A.paso, 1);
   /* Sin sesión no se puede escribir: las reglas exigen uid y email del token.
@@ -783,6 +811,10 @@ function recuperarBorrador(){
 /* ===== Render ===== */
 function render(){
   if(cloud && !usuario) return; /* sin sesión no se pinta nada */
+  /* Se autocompleta el verificador ANTES de pintar: al entrar (o reentrar) al Paso 4
+     el campo ya muestra el correo de la sesión, aunque el usuario no escriba nada.
+     Solo actúa si está vacío, así no pisa un valor ya guardado. */
+  sincronizarVerificador();
   $("#nNueva").classList.toggle("on",vista==="nueva");
   $("#nHist").classList.toggle("on",vista==="hist");
   if(vista==="hist") return renderHist();
@@ -852,8 +884,8 @@ function paso(n){
     <div class="tw"><table><caption class="sr">Recepción física por partida</caption><tr><th scope="col">Código</th><th scope="col">Descripción</th><th scope="col" class="n">Facturada</th><th scope="col" class="n">Recibida</th><th scope="col" class="n">Diferencia</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n">${esc(p.fact)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="recib" aria-label="Cantidad recibida de la partida ${i+1}" value="${esc(p.recib)}"></td><td class="n" data-d="${i}">${p.recib===""?"":`<span class="${cls(dR(p))}">${fmt(dR(p))}</span>`}</td></tr>`)}
     </table></div>${navTodos(botonOtroFolio())}`;
-  if(n===4) return `<h2>Conteo en anaquel</h2><p class="hint">Lo hace el verificador, por separado de quien recibió la mercancía. Las cantidades esperadas no se muestran para que el conteo sea independiente. Cuenta la existencia de cada código <strong>dividida por ubicación</strong>: las piezas del <strong>Piso de Ventas (PV)</strong> y las de la <strong>Bodega (BR)</strong>; el total se suma solo.</p>
-    <div class="grid"><label>Verificador<input data-f="verificador" value="${esc(A.verificador)}"></label></div>
+  if(n===4) return `<h2>Conteo en anaquel</h2><p class="hint">Lo hace el verificador, por separado de quien recibió la mercancía. Las cantidades esperadas no se muestran para que el conteo sea independiente. Cuenta la existencia de cada código <strong>dividida por ubicación</strong>: las piezas del <strong>Piso de Ventas (PV)</strong> y las de la <strong>Bodega (BR)</strong>; el total se suma solo. El verificador se asigna solo con tu sesión.</p>
+    <div class="grid"><label>Verificador<input value="${esc((usuario&&usuario.email)||A.verificador||"")}" readonly aria-readonly="true" title="Se asigna solo con tu sesión"></label></div>
     <div class="tw"><table><caption class="sr">Conteo en anaquel por partida (PV y BR)</caption><tr><th scope="col">Código</th><th scope="col">Descripción</th><th scope="col" class="n">PV · Piso de Ventas</th><th scope="col" class="n">BR · Bodega</th><th scope="col" class="n">Total real</th></tr>
     ${filas((p,i)=>`<tr><td>${esc(p.codigo)}</td><td>${esc(p.desc)}</td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="realPV" aria-label="Existencia en Piso de Ventas de la partida ${i+1}" value="${esc(p.realPV)}"></td><td class="n"><input type="number" min="0" step="1" data-i="${i}" data-k="realBR" aria-label="Existencia en Bodega de la partida ${i+1}" value="${esc(p.realBR)}"></td><td class="n" data-t="${i}">${p.real===""?"":esc(p.real)}</td></tr>`)}
     </table></div>${navTodos(botonOtroFolio())}`;

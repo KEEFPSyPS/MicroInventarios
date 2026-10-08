@@ -128,7 +128,7 @@ El paso **«Existencia en SICAR»** se eliminó por completo, junto con su colum
 | 1 | Datos de la factura | Fecha, línea, proveedor, folio, encargado |
 | 2 | Partidas facturadas | Código, descripción y cantidad facturada |
 | 3 | Recepción física | Cantidad recibida (y su diferencia contra la factura) |
-| 4 | Conteo en anaquel | Verificador y existencia real contada **por división**: PV (Piso de Ventas) y BR (Bodega) |
+| 4 | Conteo en anaquel | Verificador (automático: el correo de la sesión) y existencia real contada **por división**: PV (Piso de Ventas) y BR (Bodega) |
 | 5 | Hallazgos y reporte | Resumen, conteo para ajuste y descarga del PDF |
 
 Cada partida se guarda con **seis campos**: `codigo`, `desc`, `fact`, `recib`,
@@ -136,6 +136,15 @@ Cada partida se guarda con **seis campos**: `codigo`, `desc`, `fact`, `recib`,
 separadas** —`realPV` (piezas en Piso de Ventas) y `realBR` (piezas en Bodega)— y el
 total `real` se calcula como `realPV + realBR` (ver `sumarReal()`). Así el reporte
 muestra la existencia **dividida por ubicación** y, en la misma línea, su total.
+
+El **verificador no se captura a mano**: sale del correo de la sesión abierta, igual
+que el Responsable del Paso 1. Se muestra de solo lectura y se autocompleta al entrar
+al Paso 4 (`sincronizarVerificador()`), **solo si el documento aún no trae un
+verificador escrito** —así una auditoría vieja o ya verificada conserva su dato— y se
+fija **antes de guardar/avanzar**, de modo que queda persistido aunque no se edite
+nada ese paso. El Paso 4 ya **no exige** verificador para avanzar: basta con capturar
+`realPV` y `realBR` de cada partida. Sin sesión el campo queda vacío y el paso avanza
+igual.
 
 Un documento guardado con la versión anterior (con `division` y/o `sicar`, y
 `paso: 6`) **no se puede volver a guardar tal cual**: la app lo normaliza al abrirlo
@@ -189,7 +198,9 @@ npm test               # equivale a: node --test verificar-pasos.cjs
 ```
 
 Cubre: número y títulos de los pasos, captura completa sin `sicar`, el conteo en
-anaquel **dividido en dos cantidades (PV y BR) que suman el total**, llegada al
+anaquel **dividido en dos cantidades (PV y BR) que suman el total**, el **verificador
+automático** (solo lectura con el correo de la sesión, sin exigirlo para avanzar y sin
+pisar un valor ya guardado), llegada al
 Paso 5 por clics reales, contenido de `resumen()`/`resultado()` (con totales PV y BR
 separados), persistencia del documento normalizado, degradación y **migración** de
 documentos antiguos (paso 6 con `sicar`, o con un `real` único), **el autoguardado**

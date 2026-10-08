@@ -38,7 +38,8 @@ La app guía al encargado por **cinco pasos**:
 2. **Partidas facturadas** — código, descripción y cantidad facturada.
 3. **Recepción física** — cantidad recibida por partida.
 4. **Conteo en anaquel** — conteo real dividido en **PV** y **BR** (la suma es la
-   existencia total contada).
+   existencia total contada). El **Verificador** se toma solo de tu sesión y se muestra
+   en solo lectura, igual que el Responsable del Paso 1.
 5. **Hallazgos y reporte** — diferencias calculadas y generación del PDF.
 
 Cada cambio se **autoguarda** (respaldo local inmediato + escritura remota con retardo)
