@@ -466,8 +466,9 @@ test("navegación por clics, guardado local y autoguardado", async () => {
 
 /* ===== Carga múltiple de XML: un CFDI = una auditoría =====
    Cubre: parser CFDI, clave de duplicados (UUID o proveedor·folio), cálculo del
-   paso inicial y el lote completo (válidos + sin partidas + ilegible + duplicado
-   + mismo folio con otro proveedor). Se leen fixtures reales de tests/fixtures. */
+   paso inicial, el lote completo (válidos + sin partidas + ilegible + duplicado
+   + mismo folio con otro proveedor) y que un solo archivo NO se trata como lote.
+   Se leen fixtures reales de tests/fixtures. */
 const rutaFixture = n => require("path").join(__dirname, "tests", "fixtures", n);
 const leerXML = n => fs.readFileSync(rutaFixture(n), "utf8");
 const archivoFalso = (nombre, texto) => ({ name: nombre, size: texto.length, text: () => Promise.resolve(texto) });
@@ -570,6 +571,30 @@ test("carga múltiple de XML: tope de 20 archivos y 5 MB por archivo", async () 
   ok(res.omitidos.some(o => /5 MB/.test(o.motivo)),
      "el archivo de más de 5 MB se omite: " + res.omitidos.map(o => o.motivo).join(" | "));
   ok(res.guardados.length === 19, "se guardan 19 auditorías (20 menos el grande), no " + res.guardados.length);
+});
+
+test("carga múltiple de XML: un solo archivo conserva el flujo de siempre (no es lote)", async () => {
+  /* El disparador real es el `change` del input #factura. Con UN solo archivo NO
+     debe entrar a la rama de lote (que guarda y manda al Historial): debe rellenar
+     la auditoría en pantalla, como siempre. Se invoca el manejador guardado por el
+     arnés (document.addEventListener) con un input de un único XML. */
+  const r = await vm.runInContext(
+    "(async function(){" +
+    "  usuario = {uid:'prueba-uid', email:'auditor@ejemplo.mx', emailVerified:true};" +
+    "  vista = 'nueva'; A = blank(); msg = '';" +
+    "  const t = { id:'factura', isConnected:true, dataset:{}, value:'x'," +
+    "    files:[{ name:'una.xml', size:1, text:()=>Promise.resolve(globalThis.__unoA) }] };" +
+    "  globalThis.__guardadosAntes = (window._list||[]).length;" +
+    "  await globalThis.__handlers.change({ target: t });" +
+    "  return JSON.stringify({ vista, folio: A.folio, proveedor: A.proveedor," +
+    "    msgHtml: (nodo('facturaMsg') && nodo('facturaMsg').innerHTML) || '' });" +
+    "})()",
+    Object.assign(sandbox, { __unoA: leerXML("cfdi-valido-a.xml") }));
+  const res = JSON.parse(r);
+  ok(res.vista === "nueva", "con un solo XML se permanece en la captura, no salta al Historial: " + res.vista);
+  ok(res.folio === "A-1001", "el único XML rellena el folio en pantalla: " + res.folio);
+  ok(res.proveedor === "Refaccionaria del Norte", "también el proveedor: " + res.proveedor);
+  ok(!/lista-lote/.test(res.msgHtml), "no aparece el resumen de lote con un solo archivo");
 });
 
 
