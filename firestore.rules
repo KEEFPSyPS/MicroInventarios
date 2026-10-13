@@ -16,8 +16,9 @@ rules_version = '2';
    en un mismo folio), pero SIN poder suplantar la identidad: uid, email del
    creador e id son INMUTABLES, y todo update ajeno debe declarar quién lo hizo
    (actualizadoPor == correo del token) y cuándo (actualizadoEn == request.time).
-   BORRAR sigue reservado al dueño o a la lista de gerencia (no repudio de la
-   evidencia).
+   El dueño puede actualizar sin declarar actualizadoPor (app antigua en caché),
+   pero si lo envía debe ser su propio correo. BORRAR sigue reservado al dueño o
+   a la lista de gerencia (no repudio de la evidencia).
    ============================================================================ */
 
 service cloud.firestore {
@@ -157,17 +158,21 @@ service cloud.firestore {
           && resource.data.creado == request.resource.data.creado;
     }
 
-    /* ¿El que escribe es el DUEÑO del documento? Ya definido arriba
-       (esPropietario()). Aquí solo se documenta el uso: el dueño puede
-       actualizar sin declarar actualizadoPor, para no romper a la app antigua. */
+    /* El dueño puede ACTUALIZAR sin declarar actualizadoPor (compatibilidad con
+       la app antigua en caché que no envía ese campo). Si lo envía, se valida
+       como el de cualquiera: debe ser su propio correo (ver autorDelCambioValido). */
 
-    /* Todo update AJENO debe declarar quién lo hizo: actualizadoPor igual al
-       correo del token. El dueño queda exento para no romper a la app antigua en
-       caché, que no envía este campo. */
+    /* Reglas de quién firma el cambio:
+       · Si `actualizadoPor` ESTÁ PRESENTE, debe ser SIEMPRE igual al correo del
+         token. Vale también para el dueño: nadie puede firmar un cambio a nombre
+         de otro (anti-suplantación / no repudio).
+       · Si es un update AJENO (no es el dueño), el campo es OBLIGATORIO.
+       · El dueño queda exento de ENVIARLO (compatibilidad con la app antigua en
+         caché), pero si lo manda debe ser su propio correo. */
     function autorDelCambioValido() {
-      return esPropietario()
-          || ('actualizadoPor' in request.resource.data
-              && request.resource.data.actualizadoPor == request.auth.token.email);
+      return (!('actualizadoPor' in request.resource.data)
+              || request.resource.data.actualizadoPor == request.auth.token.email)
+          && (esPropietario() || 'actualizadoPor' in request.resource.data);
     }
 
     /* ================= Colección: auditorias ================= */
@@ -187,9 +192,10 @@ service cloud.firestore {
 
       /* ACTUALIZACIÓN: cualquier usuario activo (trabajo simultáneo en un mismo
          folio), pero sin poder tocar la identidad del creador (uid, email, id,
-         creado son inmutables) y declarando quién hace el cambio
-         (actualizadoPor == correo del token) en los updates ajenos. El dueño
-         queda exento de declararlo para no romper a la app antigua en caché. */
+         creado son inmutables) y declarando quién hace el cambio en los updates
+         ajenos (actualizadoPor == correo del token). Si el dueño envía
+         actualizadoPor, también debe ser su propio correo: nadie firma a nombre
+         de otro. */
       allow update: if activo()
                     && identidadIntacta()
                     && autorDelCambioValido()

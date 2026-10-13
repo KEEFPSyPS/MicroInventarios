@@ -369,6 +369,25 @@ test("el DUEÑO actualiza SIN actualizadoPor (permitido: app antigua en caché)"
   await assertSucceeds(updateDoc(doc(db, "auditorias", "aud-1"), { paso: 4 }));
 });
 
+test("el DUEÑO con SU PROPIO correo en actualizadoPor (permitido)", async () => {
+  await sembrar("aud-1", auditoria("u1", OPERADOR));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(
+    updateDoc(
+      doc(db, "auditorias", "aud-1"),
+      { actualizadoPor: OPERADOR, actualizadoEn: serverTimestamp(), rev: 2 }
+    )
+  );
+});
+
+test("el DUEÑO con actualizadoPor AJENO (denegado: no firma a nombre de otro)", async () => {
+  await sembrar("aud-1", auditoria("u1", OPERADOR));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(
+    updateDoc(doc(db, "auditorias", "aud-1"), { actualizadoPor: "otro@ejemplo.com" })
+  );
+});
+
 test("el DUEÑO actualiza con rev, actualizadoPor y pid en partidas (permitido)", async () => {
   await sembrar("aud-1", auditoria("u1", OPERADOR));
   const db = ctx("u1", OPERADOR).firestore();
