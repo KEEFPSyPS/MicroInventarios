@@ -47,6 +47,9 @@ code = fusionJS + "\n" +
   "data:()=>globalThis.__remoto})," +
   "set:(ref,datos)=>{ globalThis.__capturado={ref,datos}; }})," +
   "serverTimestamp=()=>({__st:true}),getDoc=()=>Promise.resolve({exists:()=>false,data:()=>null})," +
+  /* onSnapshot: escucha en vivo del folio abierto. El stub registra el callback y
+     devuelve la función para cancelarla, como el SDK real. */
+  "onSnapshot=(_ref,cb)=>{ globalThis.__snapCb=cb; return ()=>{ globalThis.__snapCancel=1; }; }," +
   "getAuth=()=>({}),signInWithEmailAndPassword=()=>Promise.resolve(),signOut=()=>Promise.resolve()," +
   "onAuthStateChanged=()=>{},setPersistence=()=>Promise.resolve(),browserLocalPersistence={},browserSessionPersistence={}," +
   "sendEmailVerification=()=>Promise.resolve();\n" +
@@ -183,6 +186,8 @@ vm.runInContext([
   "  renderHist: () => renderHist(),",
   "  procesarLoteXML, auditoriaDesdeCFDI, claveFacturaDe, partidasDeCFDI, extraerXML,",
   "  textoIndicador, texto: () => nodo('app').innerHTML, estado: () => ({vista, msg}), cloud,",
+  "  avisoRemoto, desuscribirFolio, suscribirFolio, marcaSello,",
+  "  editado: () => editadoPor, remoto: () => folioRemoto,",
   "  autoguardar: () => globalThis.__auto(), programar: () => globalThis.__programar(),",
   "  intentos: () => globalThis.__intentos, aviso: () => avisoSinGuardar() };",
   /* Envoltorios que corren dentro del contexto para ver las variables del closure. */
@@ -617,6 +622,64 @@ test("store.save() guarda por transacción y fusiona sin copiar sellos ajenos", 
   ok(salida.por === "beto@ejemplo.mx", "actualizadoPor es el correo de la sesión, no el leído (otro@ejemplo.mx)");
   ok(salida.rev === 10, "rev avanza sobre el máximo observado (9) → " + salida.rev);
   ok(salida.en && salida.en.__st === true, "actualizadoEn viaja como serverTimestamp() y NO se copia del documento leído");
+});
+
+/* ===== Escucha en vivo del folio abierto (onSnapshot) =====
+   Cuando OTRO dispositivo edita el mismo folio, la pantalla debe enterarse sin
+   recargar; y si aquí hay captura en curso, NUNCA se debe pisar lo tecleado. */
+test("la escucha en vivo adopta el cambio ajeno solo si no hay captura en curso", async () => {
+  const r = JSON.parse(await vm.runInContext(
+    "(async function(){" +
+    /* Se abre un folio con la sesión de Ana. */
+    "  usuario = { uid:'u-ana', email:'ana@ejemplo.mx', emailVerified:true };" +
+    "  A = normalizar({ id:'A-LIVE', uid:'u-ana', email:'ana@ejemplo.mx', fecha:'2026-06-10'," +
+    "    proveedor:'ACME', folio:'A-LIVE', verificador:'Ana', paso:3, creado:1," +
+    "    partidas:[ { pid:'p1', codigo:'A1', desc:'Uno', fact:'10', recib:'8', realPV:'4', realBR:'4', real:'8' } ] });" +
+    "  vista = 'nueva'; msg = '';" +
+    "  A.hist = huella(A);" +             /* sin cambios pendientes: se puede pisar */
+    "  suscribirFolio('A-LIVE');" +
+    "  const cb = globalThis.__snapCb;" +
+    "  const out = { hayCallback: typeof cb === 'function' };" +
+    /* 1) Cambio hecho por OTRO: como no hay nada pendiente, se adopta y se repinta. */
+    "  cb({ exists:()=>true, data:()=>({ id:'A-LIVE', uid:'u-ana', email:'ana@ejemplo.mx'," +
+    "    fecha:'2026-06-10', proveedor:'ACME', folio:'A-LIVE', verificador:'Ana', paso:4, creado:1," +
+    "    actualizadoPor:'beto@ejemplo.mx', actualizadoEn: 'x'," +
+    "    partidas:[ { pid:'p1', codigo:'A1', desc:'Uno', fact:'10', recib:'9', realPV:'5', realBR:'4', real:'9' } ] }) });" +
+    "  out.adoptadoRecib = A.partidas[0].recib;" +
+    "  out.pasoTrasAdoptar = A.paso;" +
+    "  out.avisoTrasAdoptar = avisoRemoto();" +
+    /* render() CONSUME msg (lo pinta y lo limpia): el texto se comprueba en pantalla. */
+    "  out.msgEnPantalla = (nodo('app').innerHTML.match(/lo actualizó beto@ejemplo\\.mx/) || [''])[0];" +
+    /* 2) Ahora SÍ hay captura en curso (la huella difiere del respaldo): el cambio
+        ajeno NO debe pisar lo tecleado; solo se avisa. */
+    "  A.partidas[0].recib = '7';" +     /* el usuario teclea sin guardar todavía */
+    "  cb({ exists:()=>true, data:()=>({ id:'A-LIVE', uid:'u-ana', email:'ana@ejemplo.mx'," +
+    "    fecha:'2026-06-10', proveedor:'ACME', folio:'A-LIVE', verificador:'Ana', paso:5, creado:1," +
+    "    actualizadoPor:'beto@ejemplo.mx', actualizadoEn: 'y'," +
+    "    partidas:[ { pid:'p1', codigo:'A1', desc:'Uno', fact:'10', recib:'2', realPV:'2', realBR:'', real:'2' } ] }) });" +
+    "  out.tecleado = A.partidas[0].recib;" +
+    "  out.pasoSinPisar = A.paso;" +
+    "  out.aviso = avisoRemoto();" +
+    /* 3) Un eco de MI PROPIO guardado no debe marcar \"editado por otro\". */
+    "  desuscribirFolio(); suscribirFolio('A-LIVE');" +
+    "  globalThis.__snapCb({ exists:()=>true, data:()=>({ id:'A-LIVE', uid:'u-ana', email:'ana@ejemplo.mx'," +
+    "    fecha:'2026-06-10', proveedor:'ACME', folio:'A-LIVE', verificador:'Ana', paso:5, creado:1," +
+    "    actualizadoPor:'ana@ejemplo.mx', actualizadoEn: 'z'," +
+    "    partidas:[ { pid:'p1', codigo:'A1', desc:'Uno', fact:'10', recib:'2', realPV:'2', realBR:'', real:'2' } ] }) });" +
+    "  out.avisoPropio = avisoRemoto();" +
+    "  out.cancelado = globalThis.__snapCancel === 1;" +
+    "  return JSON.stringify(out);" +
+    "})()", sandbox));
+  ok(r.hayCallback === true, "suscribirFolio() registra el callback de onSnapshot");
+  ok(r.adoptadoRecib === "9", "sin captura en curso, el cambio ajeno se adopta (recib → " + r.adoptadoRecib + ")");
+  ok(r.pasoTrasAdoptar === 4, "el paso del documento ajeno se adopta: " + r.pasoTrasAdoptar);
+  ok(/Editado por beto@ejemplo\.mx/.test(r.avisoTrasAdoptar), "se indica quién editó: " + r.avisoTrasAdoptar);
+  ok(/lo actualizó beto@ejemplo\.mx/.test(r.msgEnPantalla), "el mensaje en pantalla nombra a quien actualizó el folio: " + r.msgEnPantalla);
+  ok(r.tecleado === "7", "con captura en curso NO se pisa lo tecleado: recib sigue siendo " + r.tecleado);
+  ok(r.pasoSinPisar === 4, "tampoco cambia el paso mientras se captura: " + r.pasoSinPisar);
+  ok(/beto@ejemplo\.mx/.test(r.aviso), "pero sí se avisa de la edición ajena: " + r.aviso);
+  ok(r.avisoPropio === "", "un eco del propio guardado no se marca como edición ajena");
+  ok(r.cancelado === true, "desuscribirFolio() cancela la escucha anterior");
 });
 
 /* ===== Carga múltiple de XML: un CFDI = una auditoría =====

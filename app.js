@@ -4,7 +4,7 @@
  * Se sirve como archivo estático y lo carga <script type="module" src="./app.js">.
  * ======================================================================== */
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {getFirestore,collection,doc,getDocs,deleteDoc,runTransaction,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {getFirestore,collection,doc,getDocs,deleteDoc,runTransaction,serverTimestamp,onSnapshot} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,setPersistence,browserLocalPersistence,browserSessionPersistence,sendEmailVerification} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 /* La configuración vive en ./firebase-config.js (no versionada; ver
@@ -229,6 +229,9 @@ const $form = document.getElementById("formLogin");
 
 function mostrarLogin(motivo=""){
   usuario = null;
+  /* Sin sesión no hay escucha en vivo que mantener: se corta aquí para no dejar
+     una suscripción abierta con un token que ya no vale. */
+  desuscribirFolio();
   clearInterval(temporizador);
   /* Al salir se limpia el estado de verificación: si la misma cuenta vuelve a
      entrar sin haber verificado, se le reenviará el correo. */
@@ -351,6 +354,8 @@ async function mostrarApp(u){
   badge.textContent = "Firebase conectado";
   badge.style.background = "#2a7a4b";
   A = blank(); vista = "nueva"; msg = "";
+  /* Sin folio abierto no hay nada que escuchar. */
+  desuscribirFolio();
   /* Comprobación temprana: si el navegador bloquea Firestore, conviene avisarlo
      YA y no cuando el usuario ya capturó una auditoría entera. Se hace sin
      bloquear la interfaz: si falla, se sigue mostrando la app. */
@@ -774,6 +779,7 @@ const AUTOGUARDADO_MS = 900;   /* espera tras la última tecla */
 let autoguardadoTimer = null;  /* debounce de la escritura remota */
 let autoguardando = false;     /* hay una escritura en curso */
 let autoguardadoMsg = "";      /* texto del indicador ("Guardando…", "Guardado 10:32"…) */
+let editadoPor = "";           /* correo del OTRO usuario que acaba de editar el folio */
 const AUTOGUARDADO_COL = COL + "_borrador"; /* clave local del borrador de emergencia */
 
 /* Copia local inmediata del folio en curso. Se guarda BAJO la clave del borrador
@@ -836,6 +842,13 @@ function textoIndicador(){
   return "";
 }
 
+/* Aviso "lo editó otro usuario": se muestra dentro de la barra del paso, junto al
+   indicador de guardado. Es solo informativo: no interrumpe ni pierde el foco. */
+function avisoRemoto(){
+  if(!editadoPor) return "";
+  return `<span class="guardado gr" role="status" title="Otro dispositivo actualizó este folio. Al guardar, los cambios se unen.">✎ Editado por ${esc(editadoPor)}</span>`;
+}
+
 /* Al abrir la app tras un cierre inesperado, si quedó un borrador local con avance
    (y en pantalla no hay nada nuevo capturado), se ofrece recuperarlo. Así el cierre
    de pestaña no pierde el conteo ni siquiera cuando la escritura remota no llegó. */
@@ -887,7 +900,7 @@ function paso(n){
      siguiente sin antes capturar todas las partidas. Como el folio solo se puede
      guardar una vez escrito, la condición de hayAvance() ya evita ofrecer un botón
      que no haría nada (en un folio recién abierto no aparece). */
-  const navTodos = extra=>(vista==="hist" ? nav(extra) : nav(`<span class="avisoFolio"><span id="estadoGuardado" role="status" aria-live="polite" aria-atomic="true">${textoIndicador()}</span>${avisoSinGuardar()}</span>`+extra));
+  const navTodos = extra=>(vista==="hist" ? nav(extra) : nav(`<span class="avisoFolio"><span id="estadoGuardado" role="status" aria-live="polite" aria-atomic="true">${textoIndicador()}</span>${avisoRemoto()}${avisoSinGuardar()}</span>`+extra));
   if(n===1) return `<h2>Datos de la factura</h2>
     ${avisoSinGuardar()}
     <p class="hint">Captura primero los datos del documento que llegó con la mercancía.
@@ -1086,7 +1099,100 @@ function elegirAbierto(a){
   msg = p>1
     ? `Folio ${A.folio||"sin folio"} reabierto: continúa en el Paso ${p}, donde lo dejaste.`
     : `Folio ${A.folio||"sin folio"} reabierto.`;
+  /* Se empieza a escuchar el documento: si OTRO dispositivo lo edita, la pantalla
+     se entera en vivo (ver suscribirFolio()). */
+  suscribirFolio(A.id);
   return render();
+}
+
+/* ===== Trabajo simultáneo: escucha en vivo del folio abierto =====
+   Con la fusión por transacción (store.save()) ya no se pierde el trabajo del otro,
+   pero sin esto el usuario de este dispositivo seguiría viendo datos viejos hasta
+   recargar. onSnapshot avisa al instante de los cambios remotos.
+
+   Regla de oro: NUNCA se pisa lo que el usuario está tecleando. Si aquí hay
+   cambios sin guardar (o una escritura en curso), el documento remoto NO se
+   vuelca en pantalla; solo se avisa con un indicador discreto. El guardado local,
+   al fusionar, terminará incorporando lo del otro sin perder nada. */
+let _folioId = null;        /* id del folio escuchado (null = ninguno) */
+let _cancelarFolio = null;  /* función para cancelar la escucha anterior */
+var folioRemoto = null;     /* último documento recibido del servidor */
+
+/* Un folio se pisa solo si NO hay nada local pendiente. `autoguardando` cubre la
+   escritura en vuelo y `huella(A) === A.hist` significa "no hay cambios nuevos". */
+function puedoPisar(){
+  if(vista !== "nueva") return false;
+  if(autoguardando) return false;
+  return huella(A) === A.hist;
+}
+
+/* Marca de un sello de Firestore, para comparar dos documentos sin depender del
+   tipo (Timestamp, número o Date). Se usa para no repetir el mismo aviso. */
+function marcaSello(d){
+  const v = (d && d.actualizadoEn) || (d && d.actualizado);
+  if(v == null) return 0;
+  if(typeof v === "number") return v;
+  if(typeof v.toMillis === "function") return v.toMillis();
+  if(v instanceof Date) return v.getTime();
+  if(typeof v.seconds === "number") return v.seconds * 1000;
+  return 0;
+}
+
+/* ¿Este cambio remoto lo hizo otra persona? Se compara con el correo de la sesión. */
+function esDeOtro(d){
+  const quien = (d && d.actualizadoPor) || "";
+  return !!quien && !!usuario && quien !== usuario.email;
+}
+
+function indicarRemoto(d){
+  /* `actualizadoPor` es lo que aparece: da contexto humano, no un id opaco. */
+  editadoPor = (d && d.actualizadoPor) || "otra sesión";
+  actualizarIndicador();
+}
+
+function suscribirFolio(id){
+  if(!cloud || !usuario) return;
+  if(_folioId === id && _cancelarFolio) return;  /* ya se está escuchando ese folio */
+  desuscribirFolio();
+  _folioId = id;
+  _cancelarFolio = onSnapshot(doc(db,COL,id), snap=>{
+    if(!snap.exists()) return;
+    const d = snap.data();
+    /* El eco de MI propio guardado no debe avisar de "edición ajena". */
+    if(!esDeOtro(d)){ folioRemoto = d; editadoPor = ""; actualizarIndicador(); return; }
+    if(puedoPisar()){
+      /* Nada local pendiente: se adopta el documento remoto tal cual y se repinta,
+         conservando el paso en el que el usuario estaba (nunca retrocede). */
+      const pasoPrevio = Math.max(1, Math.trunc(num(A.paso)) || 1);
+      A = normalizar(JSON.parse(JSON.stringify(d)));
+      A.paso = Math.max(pasoPrevio, A.paso);
+      A.hist = huella(A);
+      msg = `El folio ${A.folio||""} lo actualizó ${d.actualizadoPor||"otra sesión"}: ya ves los últimos cambios.`;
+      folioRemoto = d;
+      editadoPor = d.actualizadoPor || "";
+      render();
+      /* Tras repintar, se deja constancia del origen remoto del dato. */
+      actualizarIndicador();
+      return;
+    }
+    /* Hay captura en curso: no se toca la pantalla. Solo se avisa, y únicamente
+       si el cambio es NUEVO (evita repetir el mismo aviso en cada reenvío del SDK). */
+    const mismo = folioRemoto
+      && folioRemoto.actualizadoPor === d.actualizadoPor
+      && marcaSello(folioRemoto) === marcaSello(d);
+    folioRemoto = d;
+    if(!mismo) indicarRemoto(d);
+  }, err=>{
+    /* Un fallo de la escucha (red, permisos) no debe romper la captura: la app
+       sigue funcionando con el guardado por transacción. */
+    void err;
+  });
+}
+
+/* Cancela la escucha al cerrar el folio, cerrar sesión o abrir otro. */
+function desuscribirFolio(){
+  if(_cancelarFolio){ try{ _cancelarFolio(); }catch(err){} }
+  _cancelarFolio = null; _folioId = null; folioRemoto = null; editadoPor = "";
 }
 
 /* Bloque de totales para ajustar inventario.
@@ -1355,6 +1461,7 @@ document.addEventListener("change", async e=>{
          textual del lote (el detalle ya se anunció en #facturaMsg, aria-live). */
       t.value = "";
       msg = resumen ? resumen.resumenTexto : "No se pudo procesar el lote de XML.";
+      desuscribirFolio();
       vista = "hist";
       await renderHist();
     }
@@ -1447,7 +1554,7 @@ document.addEventListener("click",async e=>{
        Si hay un folio a medias en pantalla, se pasa por el mismo diálogo del botón
        "Empezar otro folio" para no perderlo en silencio. */
     if(b.id==="nuevaDesdeHist"){
-      if(vista!=="nueva" || !hayAvance(A)){ A = blank(); msg = ""; vista = "nueva"; return render(); }
+      if(vista!=="nueva" || !hayAvance(A)){ desuscribirFolio(); A = blank(); msg = ""; vista = "nueva"; return render(); }
       const r = await otroFolio();
       if(r === "cancelar") return renderHist();
       if(r === "retomar" || r === "guardarPendiente"){
@@ -1462,9 +1569,10 @@ document.addEventListener("click",async e=>{
       }
       /* Guardar y empezar otro: el folio en pantalla se guarda y se abre uno nuevo. */
       if(!await guardar()){ msg = "No se guardó el folio: revisa fecha, proveedor y folio."; return renderHist(); }
+      desuscribirFolio();
       A = blank(); msg = "Folio guardado en el historial. Captura el siguiente."; vista = "nueva"; return render();
     }
-    if(b.id==="nHist"){vista="hist";return render();}
+    if(b.id==="nHist"){desuscribirFolio();vista="hist";return render();}
     if(b.dataset.go){const k=+b.dataset.go;if(k>=1&&puede(A,k)){A.paso=k;return render();}}
     if(b.id==="add"){
       if(A.partidas.length<MAX_PARTIDAS) A.partidas.push(linea0());
@@ -1500,6 +1608,7 @@ document.addEventListener("click",async e=>{
       if(r === "cancelar") return;
       if(r === "nuevo"){
         if(hayAvance(A)){ const ok = await guardar(); if(!ok) return; }
+        desuscribirFolio();
         A = blank();
         msg = "Empezando en blanco. El folio anterior quedó guardado en el historial.";
         return render();
@@ -1520,6 +1629,7 @@ document.addEventListener("click",async e=>{
         /* Sin documento localizable, se abre el historial: ahí está el botón
            *Reanudar* de cada folio en captura, con el paso donde quedó. */
         msg = "Elige el folio que quieres retomar en el historial.";
+        desuscribirFolio();
         vista = "hist";
         return render();
       }
@@ -1538,6 +1648,7 @@ document.addEventListener("click",async e=>{
         if(!l){ msg = "Ese folio ya no está disponible. Actualiza el historial."; return render(); }
         return elegirAbierto(l);
       }
+      desuscribirFolio();
       A = blank();
       msg = "Folio guardado en el historial. Captura el siguiente: el anterior sigue disponible.";
       return render();

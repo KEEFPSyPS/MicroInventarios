@@ -53,6 +53,8 @@ td.n,th.n{text-align:right;width:110px}
 .guardado.gk{background:var(--okbg);color:var(--ok)}
 .guardado.gu{background:var(--acc2);color:var(--acc)}
 .guardado.gn{background:#fdf3d7;color:#8a5a00}
+/* Aviso de que OTRO dispositivo editó el folio abierto (trabajo simultáneo). */
+.guardado.gr{background:#e8eefb;color:#1c4b9b}
 .avisoAuto{font:500 13px Barlow,Arial,sans-serif;color:var(--ok)}
 .avisoAuto.pend{color:#8a5a00}
 .neg{color:var(--bad);font-weight:700}.pos{color:#8a5a00;font-weight:700}.z{color:var(--ok)}

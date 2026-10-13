@@ -338,6 +338,12 @@ La política de fusión vive en `fusion.js` (módulo puro, sin DOM ni red) y se 
   más reciente; una edición posterior al borrado restaura la partida.
 - **Sellos del que guarda**: `actualizadoPor` y `actualizadoEn` los fija SIEMPRE el
   cliente que escribe (nunca se copian del documento leído) y `rev` avanza una unidad.
+- **Aviso en vivo**: al abrir un folio, la app se suscribe a sus cambios
+  (`onSnapshot`). Si otro dispositivo lo edita, se avisa en la barra del paso
+  ("✎ Editado por …"). Cuando **no** hay nada local pendiente, la pantalla adopta
+  los cambios remotos al momento; si hay una captura en curso, **nunca** se pisa lo
+  tecleado: solo se avisa, y el guardado local los unirá al fusionar. Un eco del
+  propio guardado no se marca como edición ajena.
 
 **Alcance (importante):** la fusión garantiza que **ninguna partida se pierde**
 (las altas de ambos lados sobreviven y ninguna fila desaparece) y que un valor
@@ -458,6 +464,7 @@ consola del navegador). Sirve para validar la política en producción **antes**
 
 ```bash
 npm test         # pruebas (node --test verificar-pasos.cjs tests/busqueda.test.cjs tests/fusion.test.cjs)
+npm run test:rules  # reglas + edición simultánea, en el emulador de Firestore
 npm run lint     # ESLint (0 errores; avisa de código muerto)
 npm run format   # Prettier --write (solo archivos nuevos; ver .prettierignore)
 ```
