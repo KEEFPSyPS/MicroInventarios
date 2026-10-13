@@ -339,6 +339,14 @@ La política de fusión vive en `fusion.js` (módulo puro, sin DOM ni red) y se 
 - **Sellos del que guarda**: `actualizadoPor` y `actualizadoEn` los fija SIEMPRE el
   cliente que escribe (nunca se copian del documento leído) y `rev` avanza una unidad.
 
+**Alcance (importante):** la fusión garantiza que **ninguna partida se pierde**
+(las altas de ambos lados sobreviven y ninguna fila desaparece) y que un valor
+capturado no se pisa con un vacío. Cuando los dos clientes tocan **el mismo campo de
+la misma partida**, gana el estado más reciente, que se decide **a nivel de
+documento** (el `actualizadoEn` de cada guardado). Es una resolución por recencia,
+no un merge campo a campo simultáneo, y está cubierta por
+`tests/simultaneo.test.cjs` contra el emulador con dos cuentas.
+
 
 ## Arquitectura
 

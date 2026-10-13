@@ -4,7 +4,7 @@
  * Se sirve como archivo estático y lo carga <script type="module" src="./app.js">.
  * ======================================================================== */
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {getFirestore,collection,doc,setDoc,getDocs,deleteDoc} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {getFirestore,collection,doc,getDocs,deleteDoc,runTransaction,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {getAuth,signInWithEmailAndPassword,signOut,onAuthStateChanged,setPersistence,browserLocalPersistence,browserSessionPersistence,sendEmailVerification} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 /* La configuración vive en ./firebase-config.js (no versionada; ver
@@ -14,6 +14,9 @@ import {firebaseConfig} from "./firebase-config.js";
 /* Súper buscador del Historial: módulo puro (sin DOM ni red) que filtra
    registros por proveedor, fecha y datos de artículo. Ver busqueda.js. */
 import {buscarRegistros, normalizarTexto} from "./busqueda.js";
+/* Política de FUSIÓN para el trabajo simultáneo: varios usuarios pueden capturar
+   el MISMO folio y la escritura no debe pisar el trabajo del otro. Ver fusion.js. */
+import {fusionar, asignarPids} from "./fusion.js";
 
 /* Si projectId queda vacío, la página guarda en este navegador (modo local). */
 const cloud = !!firebaseConfig.projectId && !!firebaseConfig.apiKey;
@@ -122,21 +125,51 @@ const store = {
       throw new Error(firebaseError(err));
     }
   },
+  /* Guarda el folio SIN pisar el trabajo de otro usuario.
+     Antes se usaba setDoc(), que REEMPLAZA el documento entero: si dos personas
+     capturaban el mismo folio a la vez, la última en guardar borraba lo del otro.
+     Ahora se hace todo dentro de una TRANSACCIÓN de Firestore:
+       1) se LEE lo que hay ahora en el documento,
+       2) se FUSIONA con lo que está en pantalla (ver fusionar() en fusion.js:
+          partida a partida por `pid`, sin pisar con vacío, el paso no retrocede),
+       3) se ESCRIBE el resultado.
+     La transacción reintenta sola si otro cliente escribe en medio, así que la
+     fusión se recalcula SIEMPRE sobre el estado más reciente: no se pierde nada.
+     OJO: `actualizadoEn` se envía como serverTimestamp() FRESCO y `rev` se calcula
+     dentro de la transacción; NUNCA se copian los del documento leído (un sello
+     viejo en un guardado nuevo es un error y las reglas lo rechazarían). */
   async save(a){
     if(!cloud){ const l=await this.all(); const i=l.findIndex(x=>x.id===a.id); i<0?l.push(a):l[i]=a; localStorage.setItem(COL,JSON.stringify(l)); return; }
+    const por = (usuario && usuario.email) || a.email || "";
     try{
-      /* Si el navegador bloquea la petición (bloqueador de anuncios, ERR_BLOCKED_BY_CLIENT),
-         Firebase reintenta sin rendirse y el await nunca regresa. Se pone un límite de
-         tiempo para poder avisar al usuario en lugar de dejar la pantalla colgada. */
-      await conLimite(setDoc(doc(db,COL,a.id),a), 15000, "guardar");
+      await conLimite(runTransaction(db, async tx=>{
+        const ref = doc(db,COL,a.id);
+        const snap = await tx.get(ref);
+        /* El fusor trabaja con objetos planos: se convierte el documento leído
+           (puede traer Timestamps de Firestore, que marcaTiempo() entiende). */
+        const remoto = snap.exists() ? snap.data() : null;
+        const docFinal = fusionar(remoto, a, { por, en: Date.now() });
+        /* El sello de tiempo se escribe como sentinela del SERVIDOR: no se puede
+           falsificar ni reutilizar el de una lectura anterior. */
+        docFinal.actualizadoEn = serverTimestamp();
+        /* `_t` es solo una ayuda de fusión local: no se persiste. */
+        docFinal.partidas = asignarPids(docFinal.partidas).map(p=>{
+          const copia = Object.assign({}, p); delete copia._t; return copia;
+        });
+        tx.set(ref, docFinal);
+      }), 15000, "guardar");
     }catch(err){
       badgeError();
+      /* Dentro de una transacción, un permiso denegado llega envuelto: el código
+         real está en la causa. Se normaliza para poder explicar la causa. */
+      const codigo = (err && err.code) || (err && err.cause && err.cause.code) || "";
+      const detalle = (err && err.message) || (err && err.cause && err.cause.message) || "";
       /* Las reglas exigen que el documento pertenezca a quien lo escribe
          (esPropietario: resource.data.uid == request.auth.uid). Si el registro
          lo capturó OTRA cuenta, o se guardó antes de tener sesión y quedó sin
          uid, Firestore responde permission-denied y el mensaje genérico de
          "revisa tu correo" despista. Se explica la causa real. */
-      if(err && err.code === "permission-denied"){
+      if(codigo === "permission-denied"){
         /* Solo se consulta el registro previo para saber si es de otra cuenta.
            Si esta consulta falla (p. ej. la red también está bloqueada), NO se
            reemplaza el error original: eso ocultaba la causa real y hacia que un
@@ -152,7 +185,11 @@ const store = {
           if(interior && /la capturó otra cuenta/.test(interior.message||"")) throw interior;
         }
       }
-      throw new Error(firebaseError(err));
+      /* Se reenvía el fallo con el código y el mensaje ya normalizados: el error
+         envuelto de la transacción no trae `code` de primer nivel y el mensaje
+         al usuario saldría vacío. */
+      const fallo = Object.assign({}, err, { code: codigo, message: detalle || String(err) });
+      throw new Error(firebaseError(fallo));
     }
   },
   async remove(id){
@@ -632,8 +669,14 @@ function normalizar(a){
       realBR: realBR,
     };
     fila.real = sumarReal(fila);
+    /* Identificador ESTABLE de la partida (ver fusion.js). Los documentos viejos
+       no lo traen: aquí se les asigna uno determinista para poder fusionar
+       partida a partida cuando dos usuarios editan el mismo folio. */
+    if(typeof p?.pid === "string" && p.pid) fila.pid = p.pid;
     return fila;
   });
+  /* Toda partida sale de normalizar() con un `pid` único y estable. */
+  a.partidas = asignarPids(a.partidas);
   return a;
 }
 
@@ -707,6 +750,9 @@ async function guardar(){
      aviso de "Avance todavía sin guardar" y lo que evita ofrecer guardar dos veces
      el mismo folio al pulsar "Empezar otro folio". */
   A.hist = huella(A);
+  /* Las bajas ya viajaron al documento: se limpian del estado local para no
+     reenviarlas en cada guardado ni dejar crecer la lista sin fin. */
+  if(A.borradas && A.borradas.length) delete A.borradas;
   /* Si hubo que descartar filas sobrantes, se informa: el guardado fue exitoso
      pero incompleto, y el usuario debe saberlo. */
   if(avisoLimite) msg = "Se guardaron las primeras " + MAX_PARTIDAS + " partidas: el límite por auditoría es " + MAX_PARTIDAS + ". Las demás no se almacenaron.";
@@ -944,8 +990,10 @@ function huella(a){
           a && a.verificador, a && a.paso,
           /* Se incluyen los campos de la partida (ya sin `sicar`): si se dejara
              fuera alguno, capturarlo no cambiaría la huella y el aviso de
-             "sin guardar" no aparecería (y el usuario perdería el dato al salir). */
-          partidasSeguras(a).map(p=>[p&&p.codigo,p&&p.desc,p&&p.fact,p&&p.recib,p&&p.realPV,p&&p.realBR,p&&p.real].join("\u0001")).join("\u0002")
+             "sin guardar" no aparecería (y el usuario perdería el dato al salir).
+             El `pid` entra también: fusionar por partida puede reordenar o anexar
+             filas del otro usuario y eso debe contar como un cambio que guardar. */
+          partidasSeguras(a).map(p=>[p&&p.pid,p&&p.codigo,p&&p.desc,p&&p.fact,p&&p.recib,p&&p.realPV,p&&p.realBR,p&&p.real].join("\u0001")).join("\u0002")
          ].join("\u0000");
 }
 

@@ -31,8 +31,22 @@ const ok = (c, m) => assert.ok(c, m);
 let code = fs.readFileSync("app.js", "utf8");
 const imports = [...code.matchAll(/^import[^;]+;$/gm)].map(m => m[0]);
 imports.forEach(s => { code = code.replace(s, ""); });
-code = "const initializeApp=()=>({}),getFirestore=()=>({}),collection=()=>({}),doc=()=>({})," +
+/* fusion.js se inyecta tal cual (módulo ES sin imports): se le quita la palabra
+   `export` para que declare las funciones en el mismo contexto vm que app.js. */
+const fusionJS = fs.readFileSync("fusion.js", "utf8").replace(/^export /gm, "");
+/* fusion.js REAL (no un stub): el test de flujo debe ejercitar la MISMA política
+   de fusión que usa la app en producción, además de las funciones de app.js. */
+code = fusionJS + "\n" +
+  "const initializeApp=()=>({}),getFirestore=()=>({}),collection=()=>({}),doc=()=>({})," +
   "setDoc=()=>Promise.resolve(),getDocs=()=>Promise.resolve({docs:[]}),deleteDoc=()=>Promise.resolve()," +
+  /* runTransaction: la app guarda con transacción (ver store.save() en app.js).
+     El stub ejecuta la función con un `tx` mínimo que devuelve el documento
+     configurado en globalThis.__remoto (o "vacío") y captura la escritura en
+     globalThis.__capturado, para comprobar qué se envió sin un Firestore real. */
+  "runTransaction=async(_db,fn)=>await fn({get:()=>Promise.resolve({exists:()=>!!globalThis.__remoto," +
+  "data:()=>globalThis.__remoto})," +
+  "set:(ref,datos)=>{ globalThis.__capturado={ref,datos}; }})," +
+  "serverTimestamp=()=>({__st:true}),getDoc=()=>Promise.resolve({exists:()=>false,data:()=>null})," +
   "getAuth=()=>({}),signInWithEmailAndPassword=()=>Promise.resolve(),signOut=()=>Promise.resolve()," +
   "onAuthStateChanged=()=>{},setPersistence=()=>Promise.resolve(),browserLocalPersistence={},browserSessionPersistence={}," +
   "sendEmailVerification=()=>Promise.resolve();\n" +
@@ -366,8 +380,8 @@ const viejo = app.normalizar({ id: "v1", fecha: "2026-09-01", linea: "Chevrolet"
   proveedor: "P", creado: 1, partidas: [{ codigo: "C", desc: "D", fact: "5", recib: "5", real: "5", sicar: "4" }], paso: 6 });
 ok(viejo.paso === 5, "un documento guardado en el paso 6 se degrada al paso " + viejo.paso);
 ok(!("sicar" in viejo.partidas[0]), "normalizar() descarta sicar (hasOnly() lo rechazaria)");
-ok(Object.keys(viejo.partidas[0]).join(",") === "codigo,desc,fact,recib,realPV,realBR,real",
-   "la partida queda con los seis campos (PV, BR y total): " + Object.keys(viejo.partidas[0]).join(","));
+ok(Object.keys(viejo.partidas[0]).join(",") === "codigo,desc,fact,recib,realPV,realBR,real,pid",
+   "la partida queda con los seis campos (PV, BR y total) más su pid estable: " + Object.keys(viejo.partidas[0]).join(","));
 ok(viejo.partidas[0].realPV === "5" && viejo.partidas[0].realBR === "" && viejo.partidas[0].real === "5",
    "un documento viejo con solo 'real' migra su total a PV (realPV=5, realBR='', real=5)");
 ok(app.completa(viejo) === true, "el documento viejo sigue contando como completo");
@@ -560,6 +574,49 @@ test("navegación por clics, guardado local y autoguardado", async () => {
   ok(autoRes.aSalvo === true, "tras el autoguardado el avance queda a salvo (huella == respaldo)");
   ok(autoRes.aviso === "", "con el avance guardable el aviso ya no alarma ('se perderá el folio')");
   ok(/Guardado/.test(autoRes.indicador), "el indicador muestra 'Guardado' tras el autoguardado");
+});
+
+/* ===== Guardado por TRANSACCIÓN (trabajo simultáneo) =====
+   store.save() debe LEER el documento, FUSIONARLO con lo de pantalla y ESCRIBIR.
+   Aquí se sustituye la transacción del stub por una que devuelve un documento
+   REMOTO con contenido propio, y se comprueba que el guardado:
+     · conserva las partidas que solo están en el remoto (otro usuario),
+     · no pierde la partida local,
+     · NO copia `actualizadoEn` ni `rev` del documento leído,
+     · envía `actualizadoPor` con el correo de la sesión y `actualizadoEn` fresco. */
+test("store.save() guarda por transacción y fusiona sin copiar sellos ajenos", async () => {
+  const salida = JSON.parse(await vm.runInContext(
+    "(async function(){" +
+    "  globalThis.__escrito = [];" +
+    /* Documento REMOTO: otro usuario ya agregó la partida 'p-remoto' y el folio
+       va en el paso 5, con rev 9 y un sello viejo que NO debe copiarse. */
+    "  globalThis.__remoto = { id:'A-TX', uid:'u1', fecha:'2026-06-10', proveedor:'ACME'," +
+    "    folio:'A-TX', email:'ana@ejemplo.mx', verificador:'Ana', paso:5, creado: 1," +
+    "    rev: 9, actualizado: 111, actualizadoEn: 111, actualizadoPor:'otro@ejemplo.mx'," +
+    "    partidas:[ { pid:'p-local', codigo:'L', desc:'Local', fact:'1', recib:'1', realPV:'1', realBR:'', real:'1' }," +
+    "               { pid:'p-remoto', codigo:'R', desc:'Solo del otro', fact:'2', recib:'2', realPV:'2', realBR:'', real:'2' } ] };" +
+    /* Se reemplaza runTransaction por uno que simula esa lectura y captura el set. */
+    "  globalThis.__origTx = runTransaction;" +
+    "  usuario = { uid:'u1', email:'beto@ejemplo.mx', emailVerified:true };" +
+    "  const docLocal = normalizar({ id:'A-TX', uid:'u1', fecha:'2026-06-10', proveedor:'ACME'," +
+    "    folio:'A-TX', email:'beto@ejemplo.mx', verificador:'Ana', paso:4, creado:1," +
+    "    actualizado: 1700000900000, actualizadoEn: 1700000900000," +
+    "    partidas:[ { pid:'p-local', codigo:'L', desc:'Local editado', fact:'1', recib:'1', realPV:'3', realBR:'', real:'3' } ] });" +
+    "  docLocal.actualizado = 1700000900000; docLocal.actualizadoEn = 1700000900000;" +
+    "  await store.save(JSON.parse(JSON.stringify(docLocal)));" +
+    "  const env = (globalThis.__capturado || {});" +
+    "  return JSON.stringify({ docs: (env.datos && env.datos.partidas || []).map(p=>({pid:p.pid, desc:p.desc, real:p.real}))," +
+    "    paso: env.datos && env.datos.paso, por: env.datos && env.datos.actualizadoPor," +
+    "    rev: env.datos && env.datos.rev, en: env.datos && env.datos.actualizadoEn });" +
+    "})()", sandbox));
+  ok(salida.docs.length === 2, "la fusión conserva la partida del otro usuario y la local: " + salida.docs.map(d=>d.pid).join(","));
+  ok(salida.docs.some(d => d.pid === "p-remoto"), "la partida creada por el otro usuario NO se pierde");
+  const local = salida.docs.find(d => d.pid === "p-local");
+  ok(local && local.real === "3", "la edición local de su propia partida se conserva");
+  ok(salida.paso === 5, "el paso no retrocede al del cliente local (4): quedó en " + salida.paso);
+  ok(salida.por === "beto@ejemplo.mx", "actualizadoPor es el correo de la sesión, no el leído (otro@ejemplo.mx)");
+  ok(salida.rev === 10, "rev avanza sobre el máximo observado (9) → " + salida.rev);
+  ok(salida.en && salida.en.__st === true, "actualizadoEn viaja como serverTimestamp() y NO se copia del documento leído");
 });
 
 /* ===== Carga múltiple de XML: un CFDI = una auditoría =====

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test verificar-pasos.cjs tests/busqueda.test.cjs tests/fusion.test.cjs",
-    "test:rules": "firebase emulators:exec --only firestore \"node --test tests/firestore.rules.test.cjs\"",
+    "test:rules": "firebase emulators:exec --only firestore \"node --test tests/firestore.rules.test.cjs tests/simultaneo.test.cjs\"",
     "serve": "npx --yes serve .",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

@@ -17,7 +17,7 @@
  * index.html/styles.css/app.js produce una versión nueva automáticamente.
  * ======================================================================== */
 
-const VERSION = "h0b96090d9440-f8e395e";
+const VERSION = "h01241a422c2c-0c73ee0";
 const CACHE = "microinventarios-" + VERSION;
 
 /* App shell: rutas relativas para funcionar también en subcarpetas. */

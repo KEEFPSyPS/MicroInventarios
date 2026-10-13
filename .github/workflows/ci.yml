@@ -51,6 +51,7 @@ jobs:
           node --check tests/firestore.rules.test.cjs
           node --check tests/busqueda.test.cjs
           node --check tests/fusion.test.cjs
+          node --check tests/simultaneo.test.cjs
 
       - name: Lint (ESLint)
         run: npm run lint
