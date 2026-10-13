@@ -21,7 +21,7 @@ const {
   assertFails,
   assertSucceeds
 } = require("@firebase/rules-unit-testing");
-const { doc, setDoc, updateDoc, deleteDoc, getDoc } = require("firebase/firestore");
+const { doc, setDoc, updateDoc, deleteDoc, getDoc, serverTimestamp } = require("firebase/firestore");
 
 /* El projectId solo etiqueta el entorno del emulador; cualquiera sirve. */
 const PROJECT_ID = "microinventarios-rules-test";
@@ -243,4 +243,157 @@ test("no-dueño y no-gerente borra auditoría ajena (denegado)", async () => {
 test("colección no declarada queda denegada (denegado)", async () => {
   const db = ctx("u1", OPERADOR).firestore();
   await assertFails(setDoc(doc(db, "otra_coleccion", "x"), { hola: 1 }));
+});
+
+/* ===================== Trabajo simultáneo (update ajeno) =====================
+   Reglas de la Fase 1: cualquier usuario ACTIVO puede actualizar el folio de otro,
+   sin tocar la identidad (uid, email, id, creado) y declarando actualizadoPor
+   igual al correo del token. El dueño sigue pudiendo actualizar SIN declararlo
+   (compatibilidad con una app antigua aún en caché). */
+
+/* Payload de un update hecho por OTRO usuario: identidad del creador intacta y
+   los campos del cambio declarados. `over` permite forzar casos inválidos. */
+function updateAjeno(over = {}) {
+  return {
+    uid: "u9",
+    email: "otro@ejemplo.com",
+    id: "aud-1",
+    creado: 1700000000000,
+    actualizadoPor: OPERADOR,
+    ...over
+  };
+}
+
+test("usuario verificado ACTUALIZA el folio de otro declarando actualizadoPor (permitido)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno()));
+});
+
+test("update ajeno con actualizadoEn serverTimestamp y rev (permitido)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(
+    updateDoc(
+      doc(db, "auditorias", "aud-1"),
+      updateAjeno({ actualizadoEn: serverTimestamp(), rev: 2 })
+    )
+  );
+});
+
+test("update ajeno SIN actualizadoPor (denegado: debe declarar quién edita)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  const sinDeclarar = updateAjeno();
+  delete sinDeclarar.actualizadoPor;
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), sinDeclarar));
+});
+
+test("update ajeno con actualizadoPor de OTRO correo (denegado: suplantación)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(
+    updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno({ actualizadoPor: "falso@ejemplo.com" }))
+  );
+});
+
+test("update ajeno que cambia uid (denegado: identidad inmutable)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno({ uid: "u1" })));
+});
+
+test("update ajeno que cambia email del creador (denegado)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno({ email: OPERADOR })));
+});
+
+test("update ajeno que cambia id (denegado: inmutable)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno({ id: "otro-id" })));
+});
+
+test("update ajeno que cambia creado (denegado: inmutable)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(
+    updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno({ creado: 1800000000000 }))
+  );
+});
+
+test("update ajeno con esquema inválido: paso fuera de rango (denegado)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno({ paso: 9 })));
+});
+
+test("update ajeno con rev de tipo incorrecto (denegado)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno({ rev: "2" })));
+});
+
+test("update ajeno con actualizadoPor de otro tipo (denegado)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), updateAjeno({ actualizadoPor: 123 })));
+});
+
+test("SIN AUTENTICAR: no actualiza el folio ajeno (denegado)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = anon().firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), { actualizadoPor: OPERADOR }));
+});
+
+test("correo NO verificado: no actualiza el folio ajeno (denegado)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = entorno
+    .authenticatedContext("u1", { email: OPERADOR, email_verified: false })
+    .firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), { actualizadoPor: OPERADOR }));
+});
+
+test("cuenta DESHABILITADA: no actualiza el folio ajeno (denegado)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = entorno
+    .authenticatedContext("u1", { email: OPERADOR, email_verified: true, custom: "disabled" })
+    .firestore();
+  await assertFails(updateDoc(doc(db, "auditorias", "aud-1"), { actualizadoPor: OPERADOR }));
+});
+
+test("el DUEÑO actualiza SIN actualizadoPor (permitido: app antigua en caché)", async () => {
+  await sembrar("aud-1", auditoria("u1", OPERADOR));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(updateDoc(doc(db, "auditorias", "aud-1"), { paso: 4 }));
+});
+
+test("el DUEÑO actualiza con rev, actualizadoPor y pid en partidas (permitido)", async () => {
+  await sembrar("aud-1", auditoria("u1", OPERADOR));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(
+    updateDoc(doc(db, "auditorias", "aud-1"), {
+      rev: 2,
+      actualizadoPor: OPERADOR,
+      actualizadoEn: serverTimestamp(),
+      partidas: [{ pid: "p1abc", codigo: "A1", real: "5" }]
+    })
+  );
+});
+
+test("partida con pid se CREA sin problema (permitido)", async () => {
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertSucceeds(
+    setDoc(
+      doc(db, "auditorias", "aud-1"),
+      auditoria("u1", OPERADOR, { partidas: [{ pid: "p1abc", codigo: "A1", real: "5" }] })
+    )
+  );
+});
+
+test("update ajeno NO cambia el borrado, que sigue denegado para no-gerente (denegado)", async () => {
+  await sembrar("aud-1", auditoria("u9", "otro@ejemplo.com"));
+  const db = ctx("u1", OPERADOR).firestore();
+  await assertFails(deleteDoc(doc(db, "auditorias", "aud-1")));
 });
