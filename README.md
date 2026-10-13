@@ -317,6 +317,28 @@ La lógica vive en `busqueda.js` (módulo puro: `normalizarTexto`, `prepararRegi
 `node:test`. El realce del texto se construye con nodos del DOM (`<mark>`, nunca
 `innerHTML` con datos del usuario), conforme a la CSP.
 
+## Edición simultánea de un folio (varios dispositivos)
+
+Varias cuentas pueden capturar **el mismo folio** a la vez sin que una borre el trabajo
+de la otra. La app nunca escribe el documento "entero encima": antes de guardar lee lo
+que hay en Firestore y **fusiona** con lo que está en pantalla.
+
+La política de fusión vive en `fusion.js` (módulo puro, sin DOM ni red) y se prueba en
+`tests/fusion.test.cjs`:
+
+- **Partidas por `pid`**: cada partida lleva un identificador estable. La fusión es
+  partida a partida, así que borrar una fila no desplaza ni confunde a las demás. Los
+  documentos viejos (sin `pid`) se migran al abrirlos, de forma determinista (dos
+  dispositivos derivan el mismo `pid` del mismo contenido).
+- **Nada se pisa con vacío**: un valor capturado nunca se reemplaza por uno vacío, ni
+  aunque venga del guardado más reciente.
+- **El paso no retrocede**: `paso` queda en el máximo de ambos clientes.
+- **Altas simultáneas**: una partida agregada en cualquiera de los dos lados se conserva.
+- **Baja contra edición**: se registra la baja (`pid` + marca de tiempo) y gana la acción
+  más reciente; una edición posterior al borrado restaura la partida.
+- **Sellos del que guarda**: `actualizadoPor` y `actualizadoEn` los fija SIEMPRE el
+  cliente que escribe (nunca se copian del documento leído) y `rev` avanza una unidad.
+
 
 ## Arquitectura
 
@@ -326,6 +348,7 @@ La lógica vive en `busqueda.js` (módulo puro: `normalizarTexto`, `prepararRegi
 ├── styles.css               Estilos de la app (servidos como archivo estático)
 ├── app.js                   Lógica de la app (módulo ESM: importa Firebase y la config)
 ├── busqueda.js              Súper buscador del Historial (módulo puro, sin DOM ni red)
+├── fusion.js                Fusión de folios para edición simultánea (módulo puro)
 ├── pwa.js                   Script clásico: instalación, avisos iOS/offline, SW
 ├── sw.js                    Service worker: precaché del shell + estrategias por host
 ├── manifest.webmanifest     Metadatos de la PWA (iconos, atajos, colores)
@@ -337,7 +360,7 @@ La lógica vive en `busqueda.js` (módulo puro: `normalizarTexto`, `prepararRegi
 ├── generar-iconos.mjs       Genera los PNG del manifest desde icon.svg (usa sharp)
 ├── eslint.config.js         Reglas de lint (ESLint 9 flat config)
 ├── .prettierrc.json         Formato de código (Prettier)
-├── tests/                    Pruebas unitarias (node:test): busqueda.test.cjs, firestore.rules.test.cjs y fixtures/ (XML CFDI de ejemplo)
+├── tests/                    Pruebas unitarias (node:test): busqueda.test.cjs, fusion.test.cjs, firestore.rules.test.cjs y fixtures/ (XML CFDI de ejemplo)
 ├── verificar-pasos.cjs      Pruebas de flujo (node:test): corre app.js en un DOM virtual
 └── README-VERIFICACION.md   Verificación de cuentas, migración y despliegue
 ```
@@ -426,7 +449,7 @@ consola del navegador). Sirve para validar la política en producción **antes**
 ## Pruebas y calidad
 
 ```bash
-npm test         # pruebas de flujo (node --test verificar-pasos.cjs)
+npm test         # pruebas (node --test verificar-pasos.cjs tests/busqueda.test.cjs tests/fusion.test.cjs)
 npm run lint     # ESLint (0 errores; avisa de código muerto)
 npm run format   # Prettier --write (solo archivos nuevos; ver .prettierignore)
 ```

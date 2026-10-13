@@ -40,6 +40,7 @@ const ARCHIVOS = [
   "styles.css",
   "app.js",
   "busqueda.js",
+  "fusion.js",
   "manifest.webmanifest",
   "firebase-config.js"
 ];

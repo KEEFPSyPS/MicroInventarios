@@ -41,6 +41,7 @@ jobs:
         run: |
           node --check app.js
           node --check busqueda.js
+          node --check fusion.js
           node --check pwa.js
           node --check sw.js
           node --check verificar-pasos.cjs
@@ -49,6 +50,7 @@ jobs:
           node --check scripts/actualizar-version-sw.mjs
           node --check tests/firestore.rules.test.cjs
           node --check tests/busqueda.test.cjs
+          node --check tests/fusion.test.cjs
 
       - name: Lint (ESLint)
         run: npm run lint
